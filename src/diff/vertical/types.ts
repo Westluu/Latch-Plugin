@@ -1,5 +1,12 @@
 import * as vscode from "vscode";
 
+export type VerticalDiffBlockLineType = "context" | "removed" | "added";
+
+export interface VerticalDiffBlockLine {
+  type: VerticalDiffBlockLineType;
+  content: string;
+}
+
 export interface VerticalDiffBlock {
   id: string;
   startLine: number;
@@ -7,6 +14,7 @@ export interface VerticalDiffBlock {
   numGreen: number;
   originalLines: string[];
   proposedLines: string[];
+  lines: VerticalDiffBlockLine[];
 }
 
 export interface PendingVerticalDiffBlock {

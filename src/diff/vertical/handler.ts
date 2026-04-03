@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import {
   PendingVerticalDiffBlock,
   VerticalDiffBlock,
+  VerticalDiffBlockLine,
   VerticalDiffSession
 } from "./types";
 
@@ -45,12 +46,15 @@ function buildReviewTextFromBlocks(
       originalIndex += 1;
     }
 
-    for (let index = 0; index < block.numRed; index += 1) {
-      reviewLines.push("");
-    }
+    for (const line of block.lines) {
+      if (line.type === "added") {
+        reviewLines.push(line.content);
+        continue;
+      }
 
-    reviewLines.push(...block.proposedLines);
-    originalIndex += block.numRed;
+      reviewLines.push(line.type === "removed" ? "" : line.content);
+      originalIndex += 1;
+    }
   }
 
   while (originalIndex < originalLines.length) {
@@ -62,12 +66,7 @@ function buildReviewTextFromBlocks(
 }
 
 function getBlockEndLine(block: VerticalDiffBlock): number {
-  return (
-    block.startLine +
-    Math.max(block.numRed, 1) +
-    Math.max(block.numGreen, 0) -
-    1
-  );
+  return block.startLine + Math.max(block.lines.length, 1) - 1;
 }
 
 function getBlockRange(
@@ -85,19 +84,71 @@ function getBlockRange(
   );
 }
 
-function getRemovedBlockRange(
-  block: VerticalDiffBlock,
-  document: vscode.TextDocument
-): vscode.Range | undefined {
-  if (block.numRed <= 0) {
-    return undefined;
-  }
+interface BlockEditSegment {
+  type: "removed" | "added";
+  startOffset: number;
+  lines: string[];
+}
 
+function buildBlockEditSegments(block: VerticalDiffBlock): BlockEditSegment[] {
+  const segments: BlockEditSegment[] = [];
+  let current: BlockEditSegment | undefined;
+
+  const flush = () => {
+    if (!current || current.lines.length === 0) {
+      return;
+    }
+
+    segments.push(current);
+    current = undefined;
+  };
+
+  block.lines.forEach((line, index) => {
+    if (line.type === "context") {
+      flush();
+      return;
+    }
+
+    if (!current || current.type !== line.type) {
+      flush();
+      current = {
+        type: line.type,
+        startOffset: index,
+        lines: []
+      };
+    }
+
+    current.lines.push(line.content);
+  });
+
+  flush();
+  return segments;
+}
+
+function getBlockSegments(
+  block: VerticalDiffBlock,
+  type: "removed" | "added"
+): BlockEditSegment[] {
+  return buildBlockEditSegments(block).filter((segment) => segment.type === type);
+}
+
+function getPrimaryBlockSegment(block: VerticalDiffBlock): BlockEditSegment | undefined {
+  return buildBlockEditSegments(block)[0];
+}
+
+function getSegmentRange(
+  block: VerticalDiffBlock,
+  segment: BlockEditSegment,
+  document: vscode.TextDocument
+): vscode.Range {
   const lastLine = Math.max(document.lineCount - 1, 0);
-  const startLine = Math.max(0, Math.min(block.startLine, lastLine));
+  const startLine = Math.max(
+    0,
+    Math.min(block.startLine + segment.startOffset, lastLine)
+  );
   const endLine = Math.max(
     startLine,
-    Math.min(block.startLine + block.numRed - 1, lastLine)
+    Math.min(startLine + segment.lines.length - 1, lastLine)
   );
 
   return new vscode.Range(
@@ -106,27 +157,37 @@ function getRemovedBlockRange(
   );
 }
 
-function getInsertedBlockRange(
+function getRemovedBlockRanges(
   block: VerticalDiffBlock,
   document: vscode.TextDocument
-): vscode.Range | undefined {
-  if (block.numGreen <= 0) {
-    return undefined;
-  }
-
-  const lastLine = Math.max(document.lineCount - 1, 0);
-  const startLine = Math.max(
-    0,
-    Math.min(block.startLine + block.numRed, lastLine)
+) : vscode.Range[] {
+  return getBlockSegments(block, "removed").map((segment) =>
+    getSegmentRange(block, segment, document)
   );
-  const endLine = Math.max(
-    startLine,
-    Math.min(block.startLine + block.numRed + block.numGreen - 1, lastLine)
-  );
+}
 
-  return new vscode.Range(
-    new vscode.Position(startLine, 0),
-    new vscode.Position(endLine, document.lineAt(endLine).text.length)
+function getInsertedBlockRanges(
+  block: VerticalDiffBlock,
+  document: vscode.TextDocument
+) : vscode.Range[] {
+  return getBlockSegments(block, "added").map((segment) =>
+    getSegmentRange(block, segment, document)
+  );
+}
+
+function getBlockOriginalText(block: VerticalDiffBlock): string {
+  return joinLines(
+    block.lines
+      .filter((line) => line.type !== "added")
+      .map((line) => line.content)
+  );
+}
+
+function getBlockProposedText(block: VerticalDiffBlock): string {
+  return joinLines(
+    block.lines
+      .filter((line) => line.type !== "removed")
+      .map((line) => line.content)
   );
 }
 
@@ -134,7 +195,8 @@ function cloneBlock(block: VerticalDiffBlock): VerticalDiffBlock {
   return {
     ...block,
     originalLines: [...block.originalLines],
-    proposedLines: [...block.proposedLines]
+    proposedLines: [...block.proposedLines],
+    lines: block.lines.map((line: VerticalDiffBlockLine) => ({ ...line }))
   };
 }
 
@@ -220,10 +282,15 @@ export class VerticalDiffHandler implements vscode.Disposable {
         { undoStopAfter: false, undoStopBefore: false }
       );
       this.currentSelectionLineCount = splitLines(this.initialReviewText).length;
-      this.session.blocks = this.initialBlocks.map((block) => ({
-        ...cloneBlock(block),
-        startLine: this.session.selectionStartLine + block.startLine
-      }));
+      let lineDelta = 0;
+      this.session.blocks = this.initialBlocks.map((block) => {
+        const nextBlock = {
+          ...cloneBlock(block),
+          startLine: this.session.selectionStartLine + block.startLine + lineDelta
+        };
+        lineDelta += block.numGreen;
+        return nextBlock;
+      });
     } finally {
       this.applying = false;
     }
@@ -242,7 +309,13 @@ export class VerticalDiffHandler implements vscode.Disposable {
   ): Promise<PendingVerticalDiffBlock[]> {
     return this.session.blocks.map((block) => ({
       block,
-      range: getBlockRange(block, document),
+      range:
+        (() => {
+          const primarySegment = getPrimaryBlockSegment(block);
+          return primarySegment
+            ? getSegmentRange(block, primarySegment, document)
+            : getBlockRange(block, document);
+        })(),
       previewText: makePreview(joinLines(block.proposedLines))
     }));
   }
@@ -307,10 +380,10 @@ export class VerticalDiffHandler implements vscode.Disposable {
       ? this.session.blocks.find((item) => item.id === blockId)
       : undefined;
     const originalText = block
-      ? joinLines(block.originalLines)
+      ? getBlockOriginalText(block)
       : this.session.originalText;
     const proposedText = block
-      ? joinLines(block.proposedLines)
+      ? getBlockProposedText(block)
       : this.session.proposedText;
     const title = block
       ? `Latch Preview: ${this.session.uri.path.split("/").pop()} (${block.id})`
@@ -368,30 +441,34 @@ export class VerticalDiffHandler implements vscode.Disposable {
     const insertedDecorations: vscode.DecorationOptions[] = [];
 
     for (const block of this.session.blocks) {
-      const removedRange = getRemovedBlockRange(block, editor.document);
-      if (removedRange) {
+      for (const [index, removedRange] of getRemovedBlockRanges(
+        block,
+        editor.document
+      ).entries()) {
         removedDecorations.push({
           range: removedRange,
           hoverMessage: new vscode.MarkdownString(
             [
               "**Removed lines**",
               "```",
-              joinLines(block.originalLines),
+              joinLines(getBlockSegments(block, "removed")[index]?.lines ?? []),
               "```"
             ].join("\n")
           )
         });
       }
 
-      const insertedRange = getInsertedBlockRange(block, editor.document);
-      if (insertedRange) {
+      for (const [index, insertedRange] of getInsertedBlockRanges(
+        block,
+        editor.document
+      ).entries()) {
         insertedDecorations.push({
           range: insertedRange,
           hoverMessage: new vscode.MarkdownString(
             [
               "**Inserted lines**",
               "```",
-              joinLines(block.proposedLines),
+              joinLines(getBlockSegments(block, "added")[index]?.lines ?? []),
               "```"
             ].join("\n")
           )
@@ -433,23 +510,46 @@ export class VerticalDiffHandler implements vscode.Disposable {
     this.applying = true;
 
     try {
+      const removedSegments = getBlockSegments(block, "removed").sort(
+        (left, right) => right.startOffset - left.startOffset
+      );
+      const addedSegments = getBlockSegments(block, "added").sort(
+        (left, right) => right.startOffset - left.startOffset
+      );
+
       if (accept) {
-        if (block.numRed > 0) {
-          await this.deleteLinesAt(block.startLine, block.numRed);
+        for (const segment of removedSegments) {
+          await this.deleteLinesAt(
+            block.startLine + segment.startOffset,
+            segment.lines.length
+          );
+        }
+
+        if (removedSegments.length > 0) {
           this.currentSelectionLineCount -= block.numRed;
           this.shiftBlocksAfter(block.startLine, -block.numRed);
         }
       } else {
-        if (block.numGreen > 0) {
-          await this.deleteLinesAt(block.startLine + block.numRed, block.numGreen);
+        for (const segment of addedSegments) {
+          await this.deleteLinesAt(
+            block.startLine + segment.startOffset,
+            segment.lines.length
+          );
+        }
+
+        if (addedSegments.length > 0) {
           this.currentSelectionLineCount -= block.numGreen;
         }
 
-        if (block.numRed > 0) {
-          await this.replaceLines(block.startLine, block.numRed, block.originalLines);
+        for (const segment of removedSegments) {
+          await this.replaceLines(
+            block.startLine + segment.startOffset,
+            segment.lines.length,
+            segment.lines
+          );
         }
 
-        if (block.numGreen > 0) {
+        if (addedSegments.length > 0) {
           this.shiftBlocksAfter(block.startLine, -block.numGreen);
         }
       }

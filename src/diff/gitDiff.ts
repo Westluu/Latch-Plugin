@@ -38,7 +38,16 @@ export function buildReviewBlocksFromFilePatch(
       .map((line) => line.content),
     proposedLines: hunk.lines
       .filter((line) => line.type === "add")
-      .map((line) => line.content)
+      .map((line) => line.content),
+    lines: hunk.lines.map((line) => ({
+      type:
+        line.type === "context"
+          ? "context"
+          : line.type === "del"
+            ? "removed"
+            : "added",
+      content: line.content
+    }))
   }));
 }
 
@@ -241,7 +250,7 @@ export async function getGitDiffForDocument(
   const relativePath = path.relative(repoRoot, document.uri.fsPath).replace(/\\/g, "/");
   const { stdout } = await execFileAsync(
     "git",
-    ["diff", "--no-ext-diff", "--no-color", "--unified=0", "HEAD", "--", relativePath],
+    ["diff", "--no-ext-diff", "--no-color", "HEAD", "--", relativePath],
     { cwd: repoRoot, maxBuffer: 10 * 1024 * 1024 }
   );
 
