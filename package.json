@@ -23,6 +23,15 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "latch-sidebar",
+          "title": "Latch",
+          "icon": "res/latch-icon.svg"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "latch.reviewSelectionFromClipboard",
@@ -66,7 +75,7 @@
       }
     ],
     "views": {
-      "explorer": [
+      "latch-sidebar": [
         {
           "id": "latch.reviewSidebar",
           "name": "Latch Reviews"

@@ -11,6 +11,7 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: reviewTreeProvider,
     showCollapseAll: true
   });
+  reviewTreeProvider.setTreeView(reviewTreeView);
 
   context.subscriptions.push(
     verticalDiffManager,

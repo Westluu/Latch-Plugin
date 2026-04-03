@@ -36,6 +36,7 @@ class ReviewSessionTreeItem extends vscode.TreeItem {
       `**${fileName}**\n\n${session.uri.fsPath}`
     );
     this.contextValue = "latchReviewSession";
+    this.iconPath = new vscode.ThemeIcon("file-code");
     this.command = {
       command: "latch.openReviewSession",
       title: "Open Review Session",
@@ -68,6 +69,7 @@ class ReviewBlockTreeItem extends vscode.TreeItem {
       ].join("\n")
     );
     this.contextValue = "latchReviewBlock";
+    this.iconPath = new vscode.ThemeIcon("diff");
     this.command = {
       command: "latch.revealReviewBlock",
       title: "Reveal Review Block",
@@ -94,6 +96,7 @@ export class ReviewTreeProvider
 {
   private readonly onDidChangeTreeDataEmitter =
     new vscode.EventEmitter<ReviewTreeItem | undefined | void>();
+  private treeView?: vscode.TreeView<ReviewTreeItem>;
 
   public readonly onDidChangeTreeData = this.onDidChangeTreeDataEmitter.event;
 
@@ -110,8 +113,37 @@ export class ReviewTreeProvider
     this.onDidChangeTreeDataEmitter.dispose();
   }
 
+  public setTreeView(treeView: vscode.TreeView<ReviewTreeItem>): void {
+    this.treeView = treeView;
+    this.updateBadge();
+  }
+
   public refresh(): void {
+    this.updateBadge();
     this.onDidChangeTreeDataEmitter.fire();
+  }
+
+  private updateBadge(): void {
+    if (!this.treeView) {
+      return;
+    }
+
+    const sessions = this.manager.getSessions();
+    const pendingBlockCount = sessions.reduce((total, session) => {
+      return total + session.blocks.filter((block) => block.status === "pending").length;
+    }, 0);
+
+    this.treeView.badge =
+      sessions.length > 0
+        ? {
+            value: sessions.length,
+            tooltip: `${sessions.length} review file${
+              sessions.length === 1 ? "" : "s"
+            }, ${pendingBlockCount} pending block${
+              pendingBlockCount === 1 ? "" : "s"
+            }`
+          }
+        : undefined;
   }
 
   public getTreeItem(element: ReviewTreeItem): vscode.TreeItem {
