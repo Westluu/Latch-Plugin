@@ -1,15 +1,15 @@
 import * as vscode from "vscode";
-import { getGitDiffForDocument } from "../gitDiff";
-import type { VerticalDiffManager } from "./manager";
+import { getGitDiffForDocument } from "../diff/gitDiff";
+import type { ReviewSessionManager } from "./sessionManager";
 
-export class VerticalDiffCodeLensProvider
+export class ReviewCodeLensProvider
   implements vscode.CodeLensProvider, vscode.Disposable
 {
   private readonly onDidChangeCodeLensesEmitter = new vscode.EventEmitter<void>();
 
   public readonly onDidChangeCodeLenses = this.onDidChangeCodeLensesEmitter.event;
 
-  public constructor(private readonly manager: VerticalDiffManager) {}
+  public constructor(private readonly manager: ReviewSessionManager) {}
 
   public dispose(): void {
     this.onDidChangeCodeLensesEmitter.dispose();

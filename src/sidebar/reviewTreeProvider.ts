@@ -1,12 +1,12 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import {
-  VerticalDiffBlock,
-  VerticalDiffSession
-} from "../diff/vertical/types";
-import { VerticalDiffManager } from "../diff/vertical/manager";
+  FileReviewSession,
+  ReviewBlock
+} from "../review/types";
+import { ReviewSessionManager } from "../review/sessionManager";
 
-function makeBlockPreview(block: VerticalDiffBlock): string {
+function makeBlockPreview(block: ReviewBlock): string {
   const source =
     block.proposedLines.join(" ").trim() ||
     block.originalLines.join(" ").trim() ||
@@ -21,7 +21,7 @@ function makeBlockPreview(block: VerticalDiffBlock): string {
 }
 
 class ReviewSessionTreeItem extends vscode.TreeItem {
-  public constructor(public readonly session: VerticalDiffSession) {
+  public constructor(public readonly session: FileReviewSession) {
     const pendingCount = session.blocks.length;
     const fileName = path.basename(session.uri.fsPath);
     super(fileName, vscode.TreeItemCollapsibleState.Expanded);
@@ -44,8 +44,8 @@ class ReviewSessionTreeItem extends vscode.TreeItem {
 
 class ReviewBlockTreeItem extends vscode.TreeItem {
   public constructor(
-    public readonly session: VerticalDiffSession,
-    public readonly block: VerticalDiffBlock
+    public readonly session: FileReviewSession,
+    public readonly block: ReviewBlock
   ) {
     super(
       `+${block.numGreen} -${block.numRed}`,
@@ -99,7 +99,7 @@ export class ReviewTreeProvider
 
   private readonly changeSubscription: vscode.Disposable;
 
-  public constructor(private readonly manager: VerticalDiffManager) {
+  public constructor(private readonly manager: ReviewSessionManager) {
     this.changeSubscription = this.manager.onDidChangeSessions(() => {
       this.refresh();
     });

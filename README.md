@@ -59,9 +59,9 @@ The main entry points are:
 - `src/extension.ts` for command registration
 - `src/apply/applyManager.ts` for apply orchestration
 - `src/diff/gitDiff.ts` for parsing unified git diffs and turning hunks into review blocks
-- `src/diff/vertical/manager.ts` for review session orchestration
-- `src/diff/vertical/codeLensProvider.ts` for inline CodeLens actions
-- `src/diff/vertical/types.ts` for vertical diff session and hunk types
+- `src/review/sessionManager.ts` for review session orchestration
+- `src/review/codeLensProvider.ts` for inline CodeLens actions
+- `src/review/types.ts` for review session and hunk types
 
 ## Next Steps
 

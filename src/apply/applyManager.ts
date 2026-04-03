@@ -5,16 +5,16 @@ import {
   getGitDiffForDocument,
   reversePatchToDocumentText
 } from "../diff/gitDiff";
-import { VerticalDiffManager } from "../diff/vertical/manager";
+import { ReviewSessionManager } from "../review/sessionManager";
 
 /**
  * "apply orchestration" from "diff rendering".
  * This class mirrors that shape for our extension: it gathers the proposed
  * edit, validates editor state, and delegates the inline review lifecycle
- * to VerticalDiffManager.
+ * to ReviewSessionManager.
  */
 export class ApplyManager {
-  public constructor(private readonly verticalDiffManager: VerticalDiffManager) {}
+  public constructor(private readonly reviewSessionManager: ReviewSessionManager) {}
 
   public async reviewGitDiffForActiveFile(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
@@ -78,7 +78,7 @@ export class ApplyManager {
         },
         { undoStopAfter: false, undoStopBefore: false }
       );
-      await this.verticalDiffManager.startDocumentReview(
+      await this.reviewSessionManager.startReview(
         editor,
         proposedText,
         reviewBlocks

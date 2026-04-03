@@ -2,7 +2,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
-import { VerticalDiffBlock } from "./vertical/types";
+import { ReviewBlock } from "../review/types";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,7 +27,7 @@ export interface ParsedFilePatch {
 
 export function buildReviewBlocksFromFilePatch(
   filePatch: ParsedFilePatch
-): VerticalDiffBlock[] {
+): ReviewBlock[] {
   return filePatch.hunks.map((hunk, index) => ({
     id: `block-${index}`,
     startLine: Math.max(0, hunk.oldStart - 1),

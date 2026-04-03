@@ -1,13 +1,13 @@
 import * as vscode from "vscode";
 import { ApplyManager } from "./apply/applyManager";
-import { VerticalDiffManager } from "./diff/vertical/manager";
+import { ReviewSessionManager } from "./review/sessionManager";
 import { ReviewTreeProvider } from "./sidebar/reviewTreeProvider";
 
 export function activate(context: vscode.ExtensionContext): void {
-  const verticalDiffManager = new VerticalDiffManager();
-  verticalDiffManager.register(context);
-  const applyManager = new ApplyManager(verticalDiffManager);
-  const reviewTreeProvider = new ReviewTreeProvider(verticalDiffManager);
+  const reviewSessionManager = new ReviewSessionManager();
+  reviewSessionManager.register(context);
+  const applyManager = new ApplyManager(reviewSessionManager);
+  const reviewTreeProvider = new ReviewTreeProvider(reviewSessionManager);
   const reviewTreeView = vscode.window.createTreeView("latch.reviewSidebar", {
     treeDataProvider: reviewTreeProvider,
     showCollapseAll: true
@@ -15,7 +15,7 @@ export function activate(context: vscode.ExtensionContext): void {
   reviewTreeProvider.setTreeView(reviewTreeView);
 
   context.subscriptions.push(
-    verticalDiffManager,
+    reviewSessionManager,
     reviewTreeProvider,
     reviewTreeView,
     vscode.commands.registerCommand(
@@ -27,43 +27,43 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       "latch.acceptDiff",
       async (sessionId?: string, hunkId?: string) => {
-        await verticalDiffManager.acceptDiff(sessionId, hunkId);
+        await reviewSessionManager.acceptDiff(sessionId, hunkId);
       }
     ),
     vscode.commands.registerCommand(
       "latch.rejectDiff",
       async (sessionId?: string, hunkId?: string) => {
-        await verticalDiffManager.rejectDiff(sessionId, hunkId);
+        await reviewSessionManager.rejectDiff(sessionId, hunkId);
       }
     ),
     vscode.commands.registerCommand(
       "latch.acceptAllDiffs",
       async (sessionId?: string) => {
-        await verticalDiffManager.acceptAllDiffs(sessionId);
+        await reviewSessionManager.acceptAllDiffs(sessionId);
       }
     ),
     vscode.commands.registerCommand(
       "latch.rejectAllDiffs",
       async (sessionId?: string) => {
-        await verticalDiffManager.rejectAllDiffs(sessionId);
+        await reviewSessionManager.rejectAllDiffs(sessionId);
       }
     ),
     vscode.commands.registerCommand(
       "latch.previewInlineDiff",
       async (sessionId?: string, hunkId?: string) => {
-        await verticalDiffManager.previewInlineDiff(sessionId, hunkId);
+        await reviewSessionManager.previewInlineDiff(sessionId, hunkId);
       }
     ),
     vscode.commands.registerCommand(
       "latch.openReviewSession",
       async (sessionId?: string) => {
-        await verticalDiffManager.revealSession(sessionId);
+        await reviewSessionManager.revealSession(sessionId);
       }
     ),
     vscode.commands.registerCommand(
       "latch.revealReviewBlock",
       async (sessionId?: string, blockId?: string) => {
-        await verticalDiffManager.revealBlock(sessionId, blockId);
+        await reviewSessionManager.revealBlock(sessionId, blockId);
       }
     )
   );
