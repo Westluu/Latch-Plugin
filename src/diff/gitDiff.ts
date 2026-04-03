@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
+import { VerticalDiffBlock } from "./vertical/types";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +23,23 @@ export interface ParsedFilePatch {
   oldPath: string | null;
   newPath: string | null;
   hunks: ParsedHunk[];
+}
+
+export function buildReviewBlocksFromFilePatch(
+  filePatch: ParsedFilePatch
+): VerticalDiffBlock[] {
+  return filePatch.hunks.map((hunk, index) => ({
+    id: `block-${index}`,
+    startLine: Math.max(0, hunk.oldStart - 1),
+    numRed: hunk.oldCount,
+    numGreen: hunk.newCount,
+    originalLines: hunk.lines
+      .filter((line) => line.type === "del")
+      .map((line) => line.content),
+    proposedLines: hunk.lines
+      .filter((line) => line.type === "add")
+      .map((line) => line.content)
+  }));
 }
 
 function normalizePatchPath(value: string | null): string | null {
@@ -223,7 +241,7 @@ export async function getGitDiffForDocument(
   const relativePath = path.relative(repoRoot, document.uri.fsPath).replace(/\\/g, "/");
   const { stdout } = await execFileAsync(
     "git",
-    ["diff", "--no-ext-diff", "--no-color", "HEAD", "--", relativePath],
+    ["diff", "--no-ext-diff", "--no-color", "--unified=0", "HEAD", "--", relativePath],
     { cwd: repoRoot, maxBuffer: 10 * 1024 * 1024 }
   );
 

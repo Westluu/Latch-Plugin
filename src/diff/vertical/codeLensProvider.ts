@@ -45,7 +45,7 @@ export class VerticalDiffCodeLensProvider
       return [
         new vscode.CodeLens(startRange, {
           title: "Review Active File Git Diff",
-          command: "latch.reviewGitDiffFromClipboard"
+          command: "latch.reviewActiveFileGitDiff"
         })
       ];
     }
@@ -54,21 +54,6 @@ export class VerticalDiffCodeLensProvider
       new vscode.Position(session.selectionStartLine, 0),
       new vscode.Position(session.selectionStartLine, 0)
     );
-
-    if (session.streamState === "streaming") {
-      return [
-        new vscode.CodeLens(startRange, {
-          title: "Streaming inline diff...",
-          command: "latch.previewInlineDiff",
-          arguments: [session.id]
-        }),
-        new vscode.CodeLens(startRange, {
-          title: "Abort",
-          command: "latch.abortInlineDiff",
-          arguments: [session.id]
-        })
-      ];
-    }
 
     const views = await this.manager.getPendingViews(session, document);
     const lenses: vscode.CodeLens[] = [];

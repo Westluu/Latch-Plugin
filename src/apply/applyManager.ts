@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import {
+  buildReviewBlocksFromFilePatch,
   findPatchForDocument,
   getGitDiffForDocument,
   reversePatchToDocumentText
@@ -14,29 +15,6 @@ import { VerticalDiffManager } from "../diff/vertical/manager";
  */
 export class ApplyManager {
   public constructor(private readonly verticalDiffManager: VerticalDiffManager) {}
-
-  public async reviewSelectionFromClipboard(): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      void vscode.window.showWarningMessage("Open a file and select text first.");
-      return;
-    }
-
-    if (editor.selection.isEmpty) {
-      void vscode.window.showWarningMessage("Select the code you want to review first.");
-      return;
-    }
-
-    const proposedText = await vscode.env.clipboard.readText();
-    if (!proposedText.trim()) {
-      void vscode.window.showWarningMessage(
-        "Clipboard is empty. Copy the proposed replacement and try again."
-      );
-      return;
-    }
-
-    await this.verticalDiffManager.startReview(editor, proposedText);
-  }
 
   public async reviewGitDiffForActiveFile(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
@@ -89,6 +67,7 @@ export class ApplyManager {
     try {
       const proposedText = editor.document.getText();
       const originalText = reversePatchToDocumentText(proposedText, filePatch);
+      const reviewBlocks = buildReviewBlocksFromFilePatch(filePatch);
       await editor.edit(
         (builder) => {
           const fullRange = new vscode.Range(
@@ -99,7 +78,11 @@ export class ApplyManager {
         },
         { undoStopAfter: false, undoStopBefore: false }
       );
-      await this.verticalDiffManager.startDocumentReview(editor, proposedText);
+      await this.verticalDiffManager.startDocumentReview(
+        editor,
+        proposedText,
+        reviewBlocks
+      );
     } catch (error) {
       void vscode.window.showErrorMessage(
         `Unable to review git diff: ${

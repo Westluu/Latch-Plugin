@@ -22,16 +22,13 @@ function makeBlockPreview(block: VerticalDiffBlock): string {
 
 class ReviewSessionTreeItem extends vscode.TreeItem {
   public constructor(public readonly session: VerticalDiffSession) {
-    const pendingCount = session.blocks.filter((block) => block.status === "pending").length;
+    const pendingCount = session.blocks.length;
     const fileName = path.basename(session.uri.fsPath);
     super(fileName, vscode.TreeItemCollapsibleState.Expanded);
 
     this.id = session.id;
     this.resourceUri = session.uri;
-    this.description =
-      session.streamState === "streaming"
-        ? "Streaming..."
-        : `${pendingCount} diff${pendingCount === 1 ? "" : "s"}`;
+    this.description = `${pendingCount} diff${pendingCount === 1 ? "" : "s"}`;
     this.tooltip = new vscode.MarkdownString(
       `**${fileName}**\n\n${session.uri.fsPath}`
     );
@@ -130,7 +127,7 @@ export class ReviewTreeProvider
 
     const sessions = this.manager.getSessions();
     const pendingBlockCount = sessions.reduce((total, session) => {
-      return total + session.blocks.filter((block) => block.status === "pending").length;
+      return total + session.blocks.length;
     }, 0);
 
     this.treeView.badge =
@@ -171,10 +168,6 @@ export class ReviewTreeProvider
         return pendingBlocks.map(
           (block) => new ReviewBlockTreeItem(element.session, block)
         );
-      }
-
-      if (element.session.streamState === "streaming") {
-        return [new ReviewStatusTreeItem("Streaming inline diff...")];
       }
 
       return [new ReviewStatusTreeItem("No pending diff blocks")];

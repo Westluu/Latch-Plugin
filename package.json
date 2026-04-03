@@ -1,7 +1,7 @@
 {
   "name": "latch-inline-review",
   "displayName": "Latch Inline Review",
-  "description": "Continue-style inline diff review for proposed edits in VS Code.",
+  "description": "Inline git-diff review for proposed edits in VS Code.",
   "version": "0.0.1",
   "publisher": "wesleyluu",
   "engines": {
@@ -12,14 +12,12 @@
   ],
   "activationEvents": [
     "onView:latch.reviewSidebar",
-    "onCommand:latch.reviewSelectionFromClipboard",
-    "onCommand:latch.reviewGitDiffFromClipboard",
+    "onCommand:latch.reviewActiveFileGitDiff",
     "onCommand:latch.acceptDiff",
     "onCommand:latch.rejectDiff",
     "onCommand:latch.acceptAllDiffs",
     "onCommand:latch.rejectAllDiffs",
-    "onCommand:latch.previewInlineDiff",
-    "onCommand:latch.abortInlineDiff"
+    "onCommand:latch.previewInlineDiff"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -34,12 +32,7 @@
     },
     "commands": [
       {
-        "command": "latch.reviewSelectionFromClipboard",
-        "title": "Review Selection From Clipboard",
-        "category": "Latch"
-      },
-      {
-        "command": "latch.reviewGitDiffFromClipboard",
+        "command": "latch.reviewActiveFileGitDiff",
         "title": "Review Active File Git Diff",
         "category": "Latch"
       },
@@ -67,11 +60,6 @@
         "command": "latch.previewInlineDiff",
         "title": "Preview Inline Diff",
         "category": "Latch"
-      },
-      {
-        "command": "latch.abortInlineDiff",
-        "title": "Abort Inline Diff",
-        "category": "Latch"
       }
     ],
     "views": {
@@ -85,30 +73,21 @@
     "menus": {
       "editor/context": [
         {
-          "command": "latch.reviewSelectionFromClipboard",
-          "when": "editorTextFocus && editorHasSelection",
-          "group": "1_modification"
-        },
-        {
-          "command": "latch.reviewGitDiffFromClipboard",
+          "command": "latch.reviewActiveFileGitDiff",
           "when": "editorTextFocus",
           "group": "1_modification"
         }
       ],
       "editor/title": [
         {
-          "command": "latch.reviewGitDiffFromClipboard",
+          "command": "latch.reviewActiveFileGitDiff",
           "when": "editorTextFocus",
           "group": "navigation@100"
         }
       ],
       "commandPalette": [
         {
-          "command": "latch.reviewSelectionFromClipboard",
-          "when": "editorTextFocus && editorHasSelection"
-        },
-        {
-          "command": "latch.reviewGitDiffFromClipboard",
+          "command": "latch.reviewActiveFileGitDiff",
           "when": "editorTextFocus"
         },
         {
@@ -129,10 +108,6 @@
         },
         {
           "command": "latch.previewInlineDiff",
-          "when": "latch.hasActiveInlineReview"
-        },
-        {
-          "command": "latch.abortInlineDiff",
           "when": "latch.hasActiveInlineReview"
         }
       ]
@@ -157,11 +132,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./"
   },
-  "dependencies": {
-    "diff": "^7.0.0"
-  },
   "devDependencies": {
-    "@types/diff": "^7.0.1",
     "@types/node": "^22.10.5",
     "@types/vscode": "^1.91.0",
     "typescript": "^5.7.2"

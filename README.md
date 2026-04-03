@@ -1,30 +1,24 @@
 # Latch Inline Review
 
-Latch is a VS Code extension scaffold that recreates the core inline diff review loop:
+Latch is a VS Code extension scaffold for reviewing the active file's git diff inline:
 
-- select code in the active editor
-- copy a proposed replacement into your clipboard
-- run `Latch: Review Selection From Clipboard`
+- open a modified file in the active editor
+- run `Latch: Review Active File Git Diff`
 - accept or reject each hunk inline with CodeLens actions
 
-It also supports reviewing the active file directly against its Git diff.
-
-Active review sessions also appear in the Explorer sidebar under `Latch Reviews`, with one entry per file and nested diff blocks you can click to jump straight to the decorated region in the editor.
+Active review sessions also appear in the dedicated `Latch` sidebar, with one entry per file and nested diff blocks you can click to jump straight to the decorated region in the editor.
 
 ## What it does
 
-This extension focuses on the editor-side UX first:
+This extension focuses on the editor-side UX first for git-backed file reviews:
 
-- computes line hunks between the selected text and the proposed text
+- uses the active file's git hunks as the review blocks
 - renders inline review affordances directly in the editor
 - exposes `Accept`, `Reject`, `Accept All`, `Reject All`, and `Preview` actions
 - applies accepted hunks back into the original document without opening a separate diff editor
 
-It is intentionally provider-agnostic right now. That makes it easy to plug in a future LLM source, Continue-style chat command, or custom backend without rewriting the review experience.
-
 ## Commands
 
-- `Latch: Review Selection From Clipboard`
 - `Latch: Review Active File Git Diff`
 - `Latch: Accept Inline Diff`
 - `Latch: Reject Inline Diff`
@@ -64,8 +58,8 @@ The main entry points are:
 
 - `src/extension.ts` for command registration
 - `src/apply/applyManager.ts` for apply orchestration
-- `src/diff/gitDiff.ts` for parsing and applying unified git diffs from external tools
-- `src/diff/vertical/manager.ts` for vertical diff session management and accept/reject logic
+- `src/diff/gitDiff.ts` for parsing unified git diffs and turning hunks into review blocks
+- `src/diff/vertical/manager.ts` for review session orchestration
 - `src/diff/vertical/codeLensProvider.ts` for inline CodeLens actions
 - `src/diff/vertical/types.ts` for vertical diff session and hunk types
 

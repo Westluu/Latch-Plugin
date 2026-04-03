@@ -1,11 +1,14 @@
 import * as vscode from "vscode";
-import { ApplyAbortManager } from "../../apply/applyAbortManager";
 import { VerticalDiffCodeLensProvider } from "./codeLensProvider";
 import {
-  createVerticalDiffSession,
+  createDocumentReviewSession,
   VerticalDiffHandler
 } from "./handler";
-import { PendingVerticalDiffBlock, VerticalDiffSession } from "./types";
+import {
+  PendingVerticalDiffBlock,
+  VerticalDiffBlock,
+  VerticalDiffSession
+} from "./types";
 
 export class VerticalDiffManager implements vscode.Disposable {
   private readonly handlers = new Map<string, VerticalDiffHandler>();
@@ -14,27 +17,11 @@ export class VerticalDiffManager implements vscode.Disposable {
 
   public readonly onDidChangeSessions = this.onDidChangeSessionsEmitter.event;
 
-  public constructor(private readonly context: vscode.ExtensionContext) {
+  public constructor() {
     this.codeLensProvider = new VerticalDiffCodeLensProvider(this);
-
-    context.subscriptions.push(
-      this,
-      this.codeLensProvider,
-      vscode.languages.registerCodeLensProvider(
-        { scheme: "*", language: "*" },
-        this.codeLensProvider
-      ),
-      vscode.workspace.onDidChangeTextDocument((event) => {
-        void this.handleDocumentChange(event);
-      }),
-      vscode.window.onDidChangeVisibleTextEditors(() => {
-        this.refreshAllDecorations();
-      })
-    );
   }
 
   public dispose(): void {
-    ApplyAbortManager.getInstance().clear();
     for (const handler of this.handlers.values()) {
       handler.clearDecorations();
       handler.dispose();
@@ -80,56 +67,28 @@ export class VerticalDiffManager implements vscode.Disposable {
     return handler.getPendingViews(document);
   }
 
-  public async startReview(
-    editor: vscode.TextEditor,
-    proposedText: string
-  ): Promise<void> {
-    await this.startReviewForRange(editor, proposedText);
-  }
-
   public async startDocumentReview(
     editor: vscode.TextEditor,
-    proposedText: string
-  ): Promise<void> {
-    const lastLine = editor.document.lineCount - 1;
-    const fullRange = new vscode.Range(
-      new vscode.Position(0, 0),
-      new vscode.Position(lastLine, editor.document.lineAt(lastLine).text.length)
-    );
-
-    await this.startReviewForRange(editor, proposedText, fullRange);
-  }
-
-  private async startReviewForRange(
-    editor: vscode.TextEditor,
     proposedText: string,
-    range?: vscode.Range
+    reviewBlocks: VerticalDiffBlock[]
   ): Promise<void> {
-    const session = createVerticalDiffSession(editor, proposedText, range);
+    const session = createDocumentReviewSession(editor, proposedText, reviewBlocks);
     if (!session) {
       void vscode.window.showInformationMessage(
-        "The clipboard text matches the selection. Nothing to review."
+        "The active file matches HEAD. Nothing to review."
       );
       return;
     }
 
-    const fileUri = session.uri.toString();
-    const abortManager = ApplyAbortManager.getInstance();
-    abortManager.abort(fileUri);
-
     this.replaceHandler(
       new VerticalDiffHandler(
         session,
-        abortManager.get(fileUri),
         () => this.refreshState(),
         (uri) => this.handleHandlerClosed(uri)
       )
     );
-    this.handlers.get(session.uri.toString())?.refresh();
-    void this.handlers.get(session.uri.toString())?.streamDiff();
-    void vscode.window.showInformationMessage(
-      "Latch review started. Streaming inline diff..."
-    );
+    await this.handlers.get(session.uri.toString())?.initializeReview();
+    void vscode.window.showInformationMessage("Latch review started.");
   }
 
   public async acceptDiff(sessionId?: string, hunkId?: string): Promise<void> {
@@ -180,15 +139,6 @@ export class VerticalDiffManager implements vscode.Disposable {
     await handler.previewInlineDiff(hunkId);
   }
 
-  public abortDiff(sessionId?: string): void {
-    const handler = this.resolveHandler(sessionId);
-    if (!handler) {
-      return;
-    }
-
-    handler.abort();
-  }
-
   public async revealSession(sessionId?: string): Promise<void> {
     const handler = this.resolveHandler(sessionId);
     if (!handler) {
@@ -230,7 +180,6 @@ export class VerticalDiffManager implements vscode.Disposable {
   private replaceHandler(handler: VerticalDiffHandler): void {
     const existing = this.handlers.get(handler.session.uri.toString());
     if (existing) {
-      ApplyAbortManager.getInstance().abort(existing.session.uri.toString());
       existing.clearDecorations();
       existing.dispose();
       this.handlers.delete(handler.session.uri.toString());
@@ -240,13 +189,29 @@ export class VerticalDiffManager implements vscode.Disposable {
     this.refreshState();
   }
 
+  public register(context: vscode.ExtensionContext): void {
+    context.subscriptions.push(
+      this,
+      this.codeLensProvider,
+      vscode.languages.registerCodeLensProvider(
+        { scheme: "*", language: "*" },
+        this.codeLensProvider
+      ),
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        void this.handleDocumentChange(event);
+      }),
+      vscode.window.onDidChangeVisibleTextEditors(() => {
+        this.refreshAllDecorations();
+      })
+    );
+  }
+
   private handleHandlerClosed(uri: vscode.Uri): void {
     const existing = this.handlers.get(uri.toString());
     if (!existing) {
       return;
     }
 
-    ApplyAbortManager.getInstance().abort(uri.toString());
     existing.dispose();
     this.handlers.delete(uri.toString());
     this.refreshState();

@@ -4,7 +4,8 @@ import { VerticalDiffManager } from "./diff/vertical/manager";
 import { ReviewTreeProvider } from "./sidebar/reviewTreeProvider";
 
 export function activate(context: vscode.ExtensionContext): void {
-  const verticalDiffManager = new VerticalDiffManager(context);
+  const verticalDiffManager = new VerticalDiffManager();
+  verticalDiffManager.register(context);
   const applyManager = new ApplyManager(verticalDiffManager);
   const reviewTreeProvider = new ReviewTreeProvider(verticalDiffManager);
   const reviewTreeView = vscode.window.createTreeView("latch.reviewSidebar", {
@@ -18,13 +19,7 @@ export function activate(context: vscode.ExtensionContext): void {
     reviewTreeProvider,
     reviewTreeView,
     vscode.commands.registerCommand(
-      "latch.reviewSelectionFromClipboard",
-      async () => {
-        await applyManager.reviewSelectionFromClipboard();
-      }
-    ),
-    vscode.commands.registerCommand(
-      "latch.reviewGitDiffFromClipboard",
+      "latch.reviewActiveFileGitDiff",
       async () => {
         await applyManager.reviewGitDiffForActiveFile();
       }
@@ -57,12 +52,6 @@ export function activate(context: vscode.ExtensionContext): void {
       "latch.previewInlineDiff",
       async (sessionId?: string, hunkId?: string) => {
         await verticalDiffManager.previewInlineDiff(sessionId, hunkId);
-      }
-    ),
-    vscode.commands.registerCommand(
-      "latch.abortInlineDiff",
-      (sessionId?: string) => {
-        verticalDiffManager.abortDiff(sessionId);
       }
     ),
     vscode.commands.registerCommand(
