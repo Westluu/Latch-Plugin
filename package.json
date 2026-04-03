@@ -11,12 +11,15 @@
     "Other"
   ],
   "activationEvents": [
+    "onView:latch.reviewSidebar",
     "onCommand:latch.reviewSelectionFromClipboard",
+    "onCommand:latch.reviewGitDiffFromClipboard",
     "onCommand:latch.acceptDiff",
     "onCommand:latch.rejectDiff",
     "onCommand:latch.acceptAllDiffs",
     "onCommand:latch.rejectAllDiffs",
-    "onCommand:latch.previewInlineDiff"
+    "onCommand:latch.previewInlineDiff",
+    "onCommand:latch.abortInlineDiff"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -24,6 +27,11 @@
       {
         "command": "latch.reviewSelectionFromClipboard",
         "title": "Review Selection From Clipboard",
+        "category": "Latch"
+      },
+      {
+        "command": "latch.reviewGitDiffFromClipboard",
+        "title": "Review Active File Git Diff",
         "category": "Latch"
       },
       {
@@ -50,20 +58,49 @@
         "command": "latch.previewInlineDiff",
         "title": "Preview Inline Diff",
         "category": "Latch"
+      },
+      {
+        "command": "latch.abortInlineDiff",
+        "title": "Abort Inline Diff",
+        "category": "Latch"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "latch.reviewSidebar",
+          "name": "Latch Reviews"
+        }
+      ]
+    },
     "menus": {
       "editor/context": [
         {
           "command": "latch.reviewSelectionFromClipboard",
           "when": "editorTextFocus && editorHasSelection",
           "group": "1_modification"
+        },
+        {
+          "command": "latch.reviewGitDiffFromClipboard",
+          "when": "editorTextFocus",
+          "group": "1_modification"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "latch.reviewGitDiffFromClipboard",
+          "when": "editorTextFocus",
+          "group": "navigation@100"
         }
       ],
       "commandPalette": [
         {
           "command": "latch.reviewSelectionFromClipboard",
           "when": "editorTextFocus && editorHasSelection"
+        },
+        {
+          "command": "latch.reviewGitDiffFromClipboard",
+          "when": "editorTextFocus"
         },
         {
           "command": "latch.acceptDiff",
@@ -83,6 +120,10 @@
         },
         {
           "command": "latch.previewInlineDiff",
+          "when": "latch.hasActiveInlineReview"
+        },
+        {
+          "command": "latch.abortInlineDiff",
           "when": "latch.hasActiveInlineReview"
         }
       ]

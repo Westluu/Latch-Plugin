@@ -19,6 +19,8 @@
 
 - `src/extension.ts`: activation and command wiring
 - `src/apply/applyManager.ts`: apply orchestration
-- `src/diff/vertical/manager.ts`: vertical diff state and rendering
+- `src/apply/applyAbortManager.ts`: per-file apply cancellation
+- `src/diff/vertical/manager.ts`: vertical diff coordination
+- `src/diff/vertical/handler.ts`: per-file streamed diff handling
 - `src/diff/vertical/codeLensProvider.ts`: inline CodeLens actions
 - `src/diff/vertical/types.ts`: diff session types

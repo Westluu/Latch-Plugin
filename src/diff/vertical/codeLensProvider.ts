@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { getGitDiffForDocument } from "../gitDiff";
 import type { VerticalDiffManager } from "./manager";
 
 export class VerticalDiffCodeLensProvider
@@ -18,13 +19,58 @@ export class VerticalDiffCodeLensProvider
     this.onDidChangeCodeLensesEmitter.fire();
   }
 
-  public provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+  public async provideCodeLenses(
+    document: vscode.TextDocument
+  ): Promise<vscode.CodeLens[]> {
     const session = this.manager.getSession(document.uri);
     if (!session) {
-      return [];
+      if (document.uri.scheme !== "file" || document.isDirty) {
+        return [];
+      }
+
+      try {
+        const diffText = await getGitDiffForDocument(document);
+        if (!diffText.trim()) {
+          return [];
+        }
+      } catch {
+        return [];
+      }
+
+      const startRange = new vscode.Range(
+        new vscode.Position(0, 0),
+        new vscode.Position(0, 0)
+      );
+
+      return [
+        new vscode.CodeLens(startRange, {
+          title: "Review Active File Git Diff",
+          command: "latch.reviewGitDiffFromClipboard"
+        })
+      ];
     }
 
-    const views = this.manager.getPendingViews(session, document);
+    const startRange = new vscode.Range(
+      new vscode.Position(session.selectionStartLine, 0),
+      new vscode.Position(session.selectionStartLine, 0)
+    );
+
+    if (session.streamState === "streaming") {
+      return [
+        new vscode.CodeLens(startRange, {
+          title: "Streaming inline diff...",
+          command: "latch.previewInlineDiff",
+          arguments: [session.id]
+        }),
+        new vscode.CodeLens(startRange, {
+          title: "Abort",
+          command: "latch.abortInlineDiff",
+          arguments: [session.id]
+        })
+      ];
+    }
+
+    const views = await this.manager.getPendingViews(session, document);
     const lenses: vscode.CodeLens[] = [];
 
     views.forEach((view, index) => {
@@ -34,17 +80,17 @@ export class VerticalDiffCodeLensProvider
         new vscode.CodeLens(anchor, {
           title: "Accept",
           command: "latch.acceptDiff",
-          arguments: [session.id, view.hunk.id]
+          arguments: [session.id, view.block.id]
         }),
         new vscode.CodeLens(anchor, {
           title: "Reject",
           command: "latch.rejectDiff",
-          arguments: [session.id, view.hunk.id]
+          arguments: [session.id, view.block.id]
         }),
         new vscode.CodeLens(anchor, {
           title: "Preview",
           command: "latch.previewInlineDiff",
-          arguments: [session.id, view.hunk.id]
+          arguments: [session.id, view.block.id]
         })
       );
 
@@ -63,6 +109,16 @@ export class VerticalDiffCodeLensProvider
         );
       }
     });
+
+    if (lenses.length === 0) {
+      lenses.push(
+        new vscode.CodeLens(startRange, {
+          title: "Preview",
+          command: "latch.previewInlineDiff",
+          arguments: [session.id]
+        })
+      );
+    }
 
     return lenses;
   }
