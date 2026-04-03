@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import {
-  buildReviewDocumentText,
+  buildReviewBlocksFromTexts,
   cloneReviewBlock,
   getReviewBlockOriginalText,
   getReviewBlockProposedText,
@@ -14,6 +14,55 @@ import {
 } from "./types";
 
 const MAX_PREVIEW_WIDTH = 120;
+const FAST_RECOMPUTE_DELAY_MS = 45;
+const NORMAL_RECOMPUTE_DELAY_MS = 90;
+const LARGE_EDIT_RECOMPUTE_DELAY_MS = 120;
+const MULTILINE_RECOMPUTE_DELAY_MS = 180;
+
+type RenderedLineKind = "context" | "removed" | "added";
+
+interface RenderedLine {
+  kind: RenderedLineKind;
+  baselineLineIndex?: number;
+  workingLineIndex?: number;
+}
+
+interface RenderedBlockSlice {
+  startLine: number;
+  endLine: number;
+}
+
+interface RenderedProjection {
+  text: string;
+  lines: RenderedLine[];
+  blocks: ReviewBlock[];
+  blockSlices: Map<string, RenderedBlockSlice>;
+}
+
+interface BlockEditSegment {
+  type: "removed" | "added";
+  startOffset: number;
+  lines: string[];
+}
+
+interface TextReplacement {
+  startOffset: number;
+  endOffset: number;
+  text: string;
+}
+
+interface LogicalSelectionPoint {
+  kind: RenderedLineKind;
+  baselineLineIndex?: number;
+  workingLineIndex?: number;
+  character: number;
+}
+
+interface LogicalSelection {
+  anchor: LogicalSelectionPoint;
+  active: LogicalSelectionPoint;
+  isReversed: boolean;
+}
 
 function makePreview(text: string): string {
   const collapsed = text
@@ -32,29 +81,12 @@ function makePreview(text: string): string {
   return `+ ${collapsed.slice(0, MAX_PREVIEW_WIDTH - 1)}…`;
 }
 
-function getBlockEndLine(block: ReviewBlock): number {
-  return block.startLine + Math.max(block.lines.length, 1) - 1;
+function cloneRenderedLine(line: RenderedLine): RenderedLine {
+  return { ...line };
 }
 
-function getBlockRange(
-  block: ReviewBlock,
-  document: vscode.TextDocument
-): vscode.Range {
-  const lastLine = Math.max(document.lineCount - 1, 0);
-  const safeStartLine = Math.max(0, Math.min(block.startLine, lastLine));
-  const blockEnd = getBlockEndLine(block);
-  const safeEndLine = Math.max(safeStartLine, Math.min(blockEnd, lastLine));
-
-  return new vscode.Range(
-    new vscode.Position(safeStartLine, 0),
-    new vscode.Position(safeEndLine, document.lineAt(safeEndLine).text.length)
-  );
-}
-
-interface BlockEditSegment {
-  type: "removed" | "added";
-  startOffset: number;
-  lines: string[];
+function normalizeText(text: string): string {
+  return text.replace(/\r\n/g, "\n");
 }
 
 function buildBlockEditSegments(block: ReviewBlock): BlockEditSegment[] {
@@ -103,51 +135,131 @@ function getPrimaryBlockSegment(block: ReviewBlock): BlockEditSegment | undefine
   return buildBlockEditSegments(block)[0];
 }
 
-function getSegmentRange(
-  block: ReviewBlock,
-  segment: BlockEditSegment,
+function getDocumentRange(document: vscode.TextDocument): vscode.Range {
+  return new vscode.Range(
+    document.positionAt(0),
+    document.positionAt(document.getText().length)
+  );
+}
+
+function getMinimalTextReplacement(
+  currentText: string,
+  nextText: string
+): TextReplacement | undefined {
+  if (currentText === nextText) {
+    return undefined;
+  }
+
+  const currentLines = splitReviewLines(currentText);
+  const nextLines = splitReviewLines(nextText);
+  let firstDifferentLine = 0;
+
+  while (
+    firstDifferentLine < currentLines.length &&
+    firstDifferentLine < nextLines.length &&
+    currentLines[firstDifferentLine] === nextLines[firstDifferentLine]
+  ) {
+    firstDifferentLine += 1;
+  }
+
+  let currentSuffixIndex = currentLines.length - 1;
+  let nextSuffixIndex = nextLines.length - 1;
+  while (
+    currentSuffixIndex >= firstDifferentLine &&
+    nextSuffixIndex >= firstDifferentLine &&
+    currentLines[currentSuffixIndex] === nextLines[nextSuffixIndex]
+  ) {
+    currentSuffixIndex -= 1;
+    nextSuffixIndex -= 1;
+  }
+
+  const getLineStartOffset = (text: string, lineIndex: number): number => {
+    if (lineIndex <= 0) {
+      return 0;
+    }
+
+    let currentLine = 0;
+    let searchOffset = 0;
+
+    while (currentLine < lineIndex) {
+      const newlineOffset = text.indexOf("\n", searchOffset);
+      if (newlineOffset === -1) {
+        return text.length;
+      }
+
+      searchOffset = newlineOffset + 1;
+      currentLine += 1;
+    }
+
+    return searchOffset;
+  };
+
+  const startOffset = getLineStartOffset(currentText, firstDifferentLine);
+
+  let endOffset = currentText.length;
+  if (currentSuffixIndex + 1 < currentLines.length) {
+    endOffset = getLineStartOffset(currentText, currentSuffixIndex + 1);
+  }
+
+  if (
+    firstDifferentLine === currentSuffixIndex + 1 &&
+    firstDifferentLine === nextSuffixIndex + 1
+  ) {
+    endOffset = startOffset;
+  }
+
+  return {
+    startOffset,
+    endOffset,
+    text: nextLines.slice(firstDifferentLine, nextSuffixIndex + 1).join("\n")
+  };
+}
+
+function getRangeForLines(
+  startLine: number,
+  endLine: number,
   document: vscode.TextDocument
 ): vscode.Range {
   const lastLine = Math.max(document.lineCount - 1, 0);
-  const startLine = Math.max(
-    0,
-    Math.min(block.startLine + segment.startOffset, lastLine)
-  );
-  const endLine = Math.max(
-    startLine,
-    Math.min(startLine + segment.lines.length - 1, lastLine)
-  );
+  const safeStartLine = Math.max(0, Math.min(startLine, lastLine));
+  const safeEndLine = Math.max(safeStartLine, Math.min(endLine, lastLine));
 
   return new vscode.Range(
-    new vscode.Position(startLine, 0),
-    new vscode.Position(endLine, document.lineAt(endLine).text.length)
+    new vscode.Position(safeStartLine, 0),
+    new vscode.Position(safeEndLine, document.lineAt(safeEndLine).text.length)
   );
 }
 
-function getRemovedBlockRanges(
-  block: ReviewBlock,
+function getBlockRange(
+  slice: RenderedBlockSlice,
   document: vscode.TextDocument
-): vscode.Range[] {
-  return getBlockSegments(block, "removed").map((segment) =>
-    getSegmentRange(block, segment, document)
-  );
+): vscode.Range {
+  return getRangeForLines(slice.startLine, slice.endLine, document);
 }
 
-function getInsertedBlockRanges(
-  block: ReviewBlock,
+function getSegmentRange(
+  slice: RenderedBlockSlice,
+  segment: BlockEditSegment,
   document: vscode.TextDocument
-): vscode.Range[] {
-  return getBlockSegments(block, "added").map((segment) =>
-    getSegmentRange(block, segment, document)
-  );
+): vscode.Range {
+  const startLine = slice.startLine + segment.startOffset;
+  const endLine = startLine + Math.max(segment.lines.length - 1, 0);
+  return getRangeForLines(startLine, endLine, document);
+}
+
+function isDefinedNumber(value: number | undefined): value is number {
+  return typeof value === "number";
 }
 
 export class FileReviewController implements vscode.Disposable {
   private applying = false;
   private disposed = false;
+  private recomputeTimer?: NodeJS.Timeout;
+  private pendingRecomputeDelayMs = NORMAL_RECOMPUTE_DELAY_MS;
   private currentSelectionLineCount: number;
-  private readonly initialReviewText: string;
-  private readonly initialBlocks: ReviewBlock[];
+  private renderedText: string;
+  private renderedLines: RenderedLine[];
+  private renderedBlockSlices = new Map<string, RenderedBlockSlice>();
   private readonly removedDecoration =
     vscode.window.createTextEditorDecorationType({
       backgroundColor: new vscode.ThemeColor(
@@ -170,13 +282,9 @@ export class FileReviewController implements vscode.Disposable {
     private readonly notifyChanged: () => void,
     private readonly onDidClose: (uri: vscode.Uri) => void
   ) {
-    const baselineLines = splitReviewLines(this.session.baselineText);
-    this.initialBlocks = this.session.blocks.map(cloneReviewBlock);
-    this.initialReviewText = buildReviewDocumentText(
-      baselineLines,
-      this.initialBlocks
-    );
     this.currentSelectionLineCount = this.session.originalLineCount;
+    this.renderedText = this.session.baselineText;
+    this.renderedLines = this.buildPlainRenderedLines(this.session.baselineText);
   }
 
   public async initializeReview(): Promise<void> {
@@ -190,36 +298,12 @@ export class FileReviewController implements vscode.Disposable {
       new vscode.Position(this.session.selectionStartLine, 0)
     );
 
-    this.applying = true;
-    try {
-      await editor.edit(
-        (builder) => {
-          builder.replace(
-            this.currentSelectionRange(editor.document),
-            this.initialReviewText
-          );
-        },
-        { undoStopAfter: false, undoStopBefore: false }
-      );
-      this.currentSelectionLineCount = splitReviewLines(this.initialReviewText).length;
-      let lineDelta = 0;
-      this.session.blocks = this.initialBlocks.map((block) => {
-        const nextBlock = {
-          ...cloneReviewBlock(block),
-          startLine: this.session.selectionStartLine + block.startLine + lineDelta
-        };
-        lineDelta += block.numGreen;
-        return nextBlock;
-      });
-    } finally {
-      this.applying = false;
-    }
-
-    this.refresh();
+    await this.recomputeSession(false);
   }
 
   public dispose(): void {
     this.disposed = true;
+    this.clearRecomputeTimer();
     this.removedDecoration.dispose();
     this.insertedDecoration.dispose();
   }
@@ -227,15 +311,22 @@ export class FileReviewController implements vscode.Disposable {
   public async getPendingViews(
     document: vscode.TextDocument
   ): Promise<PendingReviewBlockView[]> {
-    return this.session.blocks.map((block) => {
+    return this.session.blocks.flatMap((block) => {
+      const slice = this.renderedBlockSlices.get(block.id);
+      if (!slice) {
+        return [];
+      }
+
       const primarySegment = getPrimaryBlockSegment(block);
-      return {
-        block,
-        range: primarySegment
-          ? getSegmentRange(block, primarySegment, document)
-          : getBlockRange(block, document),
-        previewText: makePreview(joinReviewLines(block.proposedLines))
-      };
+      return [
+        {
+          block,
+          range: primarySegment
+            ? getSegmentRange(slice, primarySegment, document)
+            : getBlockRange(slice, document),
+          previewText: makePreview(joinReviewLines(block.proposedLines))
+        }
+      ];
     });
   }
 
@@ -248,9 +339,9 @@ export class FileReviewController implements vscode.Disposable {
     const block = blockId
       ? this.session.blocks.find((candidate) => candidate.id === blockId)
       : this.session.blocks[0];
-
-    const targetRange = block
-      ? getBlockRange(block, editor.document)
+    const slice = block ? this.renderedBlockSlices.get(block.id) : undefined;
+    const targetRange = slice
+      ? getBlockRange(slice, editor.document)
       : new vscode.Range(
           new vscode.Position(this.session.selectionStartLine, 0),
           new vscode.Position(this.session.selectionStartLine, 0)
@@ -283,15 +374,15 @@ export class FileReviewController implements vscode.Disposable {
   }
 
   public async acceptAllDiffs(): Promise<void> {
-    for (const block of [...this.session.blocks].reverse()) {
-      await this.acceptRejectBlock(true, block);
-    }
+    this.clearRecomputeTimer();
+    this.session.baselineText = this.session.workingText;
+    await this.writePlainTextAndClose(this.session.workingText);
   }
 
   public async rejectAllDiffs(): Promise<void> {
-    for (const block of [...this.session.blocks].reverse()) {
-      await this.acceptRejectBlock(false, block);
-    }
+    this.clearRecomputeTimer();
+    this.session.workingText = this.session.baselineText;
+    await this.writePlainTextAndClose(this.session.baselineText);
   }
 
   public async previewInlineDiff(blockId?: string): Promise<void> {
@@ -329,17 +420,27 @@ export class FileReviewController implements vscode.Disposable {
   }
 
   public async handleDocumentChange(
-    _event: vscode.TextDocumentChangeEvent
+    event: vscode.TextDocumentChangeEvent
   ): Promise<void> {
-    if (this.applying) {
-      this.refresh();
+    if (this.applying || this.disposed) {
+      if (this.applying) {
+        this.refresh();
+      }
       return;
     }
 
-    this.close();
-    void vscode.window.showWarningMessage(
-      "Latch inline review was closed because the document changed outside the review flow."
-    );
+    try {
+      this.translateDocumentChanges(event);
+    } catch {
+      await this.restoreLastKnownWorkingTextAndClose();
+      void vscode.window.showWarningMessage(
+        "Latch inline review could not translate that edit. The last known working text was restored and the review was closed."
+      );
+      return;
+    }
+
+    this.pendingRecomputeDelayMs = this.computeRecomputeDelay(event);
+    this.scheduleRecompute();
   }
 
   public refresh(): void {
@@ -360,18 +461,20 @@ export class FileReviewController implements vscode.Disposable {
     const insertedDecorations: vscode.DecorationOptions[] = [];
 
     for (const block of this.session.blocks) {
+      const slice = this.renderedBlockSlices.get(block.id);
+      if (!slice) {
+        continue;
+      }
+
       const removedSegments = getBlockSegments(block, "removed");
-      for (const [index, removedRange] of getRemovedBlockRanges(
-        block,
-        editor.document
-      ).entries()) {
+      for (const [index, removedSegment] of removedSegments.entries()) {
         removedDecorations.push({
-          range: removedRange,
+          range: getSegmentRange(slice, removedSegment, editor.document),
           hoverMessage: new vscode.MarkdownString(
             [
               "**Removed lines**",
               "```",
-              joinReviewLines(removedSegments[index]?.lines ?? []),
+              joinReviewLines(removedSegment.lines),
               "```"
             ].join("\n")
           )
@@ -379,17 +482,14 @@ export class FileReviewController implements vscode.Disposable {
       }
 
       const addedSegments = getBlockSegments(block, "added");
-      for (const [index, insertedRange] of getInsertedBlockRanges(
-        block,
-        editor.document
-      ).entries()) {
+      for (const [index, addedSegment] of addedSegments.entries()) {
         insertedDecorations.push({
-          range: insertedRange,
+          range: getSegmentRange(slice, addedSegment, editor.document),
           hoverMessage: new vscode.MarkdownString(
             [
               "**Inserted lines**",
               "```",
-              joinReviewLines(addedSegments[index]?.lines ?? []),
+              joinReviewLines(addedSegment.lines),
               "```"
             ].join("\n")
           )
@@ -419,82 +519,374 @@ export class FileReviewController implements vscode.Disposable {
     editor.setDecorations(this.insertedDecoration, []);
   }
 
+  private buildPlainRenderedLines(text: string): RenderedLine[] {
+    return splitReviewLines(text).map((_, index) => ({
+      kind: "context",
+      baselineLineIndex: index,
+      workingLineIndex: index
+    }));
+  }
+
+  private buildRenderedProjection(blocks: ReviewBlock[]): RenderedProjection {
+    const baselineLines = splitReviewLines(this.session.baselineText);
+    const reviewLines: string[] = [];
+    const renderedLines: RenderedLine[] = [];
+    const renderedBlocks: ReviewBlock[] = [];
+    const blockSlices = new Map<string, RenderedBlockSlice>();
+    let baselineIndex = 0;
+    let workingIndex = 0;
+
+    for (const block of blocks) {
+      while (baselineIndex < block.startLine) {
+        reviewLines.push(baselineLines[baselineIndex] ?? "");
+        renderedLines.push({
+          kind: "context",
+          baselineLineIndex: baselineIndex,
+          workingLineIndex: workingIndex
+        });
+        baselineIndex += 1;
+        workingIndex += 1;
+      }
+
+      const sliceStartLine = this.session.selectionStartLine + reviewLines.length;
+      let anchorLine = sliceStartLine;
+
+      block.lines.forEach((line, index) => {
+        reviewLines.push(line.content);
+
+        if (line.type !== "context" && index === 0) {
+          anchorLine = this.session.selectionStartLine + reviewLines.length - 1;
+        }
+
+        if (line.type === "context") {
+          renderedLines.push({
+            kind: "context",
+            baselineLineIndex: baselineIndex,
+            workingLineIndex: workingIndex
+          });
+          baselineIndex += 1;
+          workingIndex += 1;
+          return;
+        }
+
+        if (line.type === "removed") {
+          renderedLines.push({
+            kind: "removed",
+            baselineLineIndex: baselineIndex
+          });
+          baselineIndex += 1;
+          return;
+        }
+
+        renderedLines.push({
+          kind: "added",
+          workingLineIndex: workingIndex
+        });
+        workingIndex += 1;
+      });
+
+      const firstChangedLine = block.lines.findIndex((line) => line.type !== "context");
+      if (firstChangedLine > 0) {
+        anchorLine = sliceStartLine + firstChangedLine;
+      }
+
+      const sliceEndLine = this.session.selectionStartLine + reviewLines.length - 1;
+      const renderedBlock = cloneReviewBlock(block);
+      renderedBlock.startLine = anchorLine;
+      renderedBlocks.push(renderedBlock);
+      blockSlices.set(block.id, {
+        startLine: sliceStartLine,
+        endLine: sliceEndLine
+      });
+    }
+
+    while (baselineIndex < baselineLines.length) {
+      reviewLines.push(baselineLines[baselineIndex] ?? "");
+      renderedLines.push({
+        kind: "context",
+        baselineLineIndex: baselineIndex,
+        workingLineIndex: workingIndex
+      });
+      baselineIndex += 1;
+      workingIndex += 1;
+    }
+
+    return {
+      text: joinReviewLines(reviewLines),
+      lines: renderedLines,
+      blocks: renderedBlocks,
+      blockSlices
+    };
+  }
+
+  private translateDocumentChanges(
+    event: vscode.TextDocumentChangeEvent
+  ): void {
+    const sortedChanges = [...event.contentChanges].sort((left, right) => {
+      if (left.range.start.line !== right.range.start.line) {
+        return right.range.start.line - left.range.start.line;
+      }
+
+      return right.range.start.character - left.range.start.character;
+    });
+    let nextRenderedText = this.renderedText;
+    let nextRenderedLines = this.renderedLines.map(cloneRenderedLine);
+
+    for (const change of sortedChanges) {
+      const translated = this.applyContentChange(
+        nextRenderedText,
+        nextRenderedLines,
+        change
+      );
+
+      if (!translated) {
+        throw new Error("unsupported change");
+      }
+
+      nextRenderedText = translated.text;
+      nextRenderedLines = translated.lines;
+    }
+
+    const finalDocumentText = normalizeText(event.document.getText());
+    if (nextRenderedText !== finalDocumentText) {
+      throw new Error("render mismatch");
+    }
+
+    this.renderedText = nextRenderedText;
+    this.renderedLines = nextRenderedLines;
+    this.currentSelectionLineCount = nextRenderedLines.length;
+    this.session.workingText = this.deriveWorkingText(
+      nextRenderedText,
+      nextRenderedLines
+    );
+  }
+
+  private applyContentChange(
+    currentText: string,
+    currentLines: RenderedLine[],
+    change: vscode.TextDocumentContentChangeEvent
+  ): { text: string; lines: RenderedLine[] } | undefined {
+    const textLines = splitReviewLines(currentText);
+    if (textLines.length !== currentLines.length) {
+      return undefined;
+    }
+
+    const { start, end } = change.range;
+    const startLineText = textLines[start.line];
+    const endLineText = textLines[end.line];
+
+    if (
+      startLineText === undefined ||
+      endLineText === undefined ||
+      start.character > startLineText.length ||
+      end.character > endLineText.length
+    ) {
+      return undefined;
+    }
+
+    const replacementPrefix = startLineText.slice(0, start.character);
+    const replacementSuffix = endLineText.slice(end.character);
+    const replacementLines = splitReviewLines(
+      replacementPrefix + normalizeText(change.text) + replacementSuffix
+    );
+    const affectedTextLines = textLines.slice(start.line, end.line + 1);
+    const affectedRenderedLines = currentLines.slice(start.line, end.line + 1);
+    const replacementRenderedLines = this.buildReplacementRenderedLines(
+      affectedTextLines,
+      affectedRenderedLines,
+      replacementLines,
+      normalizeText(change.text),
+      start.character,
+      end.character
+    );
+    const nextTextLines = [
+      ...textLines.slice(0, start.line),
+      ...replacementLines,
+      ...textLines.slice(end.line + 1)
+    ];
+    const nextRenderedLineState = this.reindexRenderedLines([
+      ...currentLines.slice(0, start.line),
+      ...replacementRenderedLines,
+      ...currentLines.slice(end.line + 1)
+    ]);
+
+    return {
+      text: joinReviewLines(nextTextLines),
+      lines: nextRenderedLineState
+    };
+  }
+
+  private buildReplacementRenderedLines(
+    affectedTextLines: string[],
+    affectedRenderedLines: RenderedLine[],
+    replacementLines: string[],
+    insertedText: string,
+    startCharacter: number,
+    endCharacter: number
+  ): RenderedLine[] {
+    const replacementRenderedLines = replacementLines.map<RenderedLine>(() => ({
+      kind: "added"
+    }));
+    const firstAffectedText = affectedTextLines[0] ?? "";
+    const lastAffectedText = affectedTextLines[affectedTextLines.length - 1] ?? "";
+    const firstAffectedLine = affectedRenderedLines[0];
+    const lastAffectedLine = affectedRenderedLines[affectedRenderedLines.length - 1];
+    const lastReplacementIndex = replacementRenderedLines.length - 1;
+    const shouldPreserveFirstLine =
+      firstAffectedLine !== undefined &&
+      replacementLines[0] === firstAffectedText &&
+      startCharacter === firstAffectedText.length &&
+      (insertedText === "" || insertedText.startsWith("\n"));
+    const shouldPreserveLastLine =
+      lastAffectedLine !== undefined &&
+      lastReplacementIndex >= 0 &&
+      replacementLines[lastReplacementIndex] === lastAffectedText &&
+      endCharacter === 0 &&
+      (insertedText === "" || insertedText.endsWith("\n"));
+
+    if (shouldPreserveFirstLine) {
+      replacementRenderedLines[0] = cloneRenderedLine(firstAffectedLine);
+    }
+
+    if (shouldPreserveLastLine && lastReplacementIndex >= 0) {
+      replacementRenderedLines[lastReplacementIndex] =
+        cloneRenderedLine(lastAffectedLine);
+    }
+
+    return replacementRenderedLines;
+  }
+
+  private reindexRenderedLines(lines: RenderedLine[]): RenderedLine[] {
+    let workingIndex = 0;
+
+    return lines.map((line) => {
+      if (line.kind === "removed") {
+        return {
+          ...line,
+          workingLineIndex: undefined
+        };
+      }
+
+      const reindexedLine: RenderedLine = {
+        ...line,
+        workingLineIndex: workingIndex
+      };
+      workingIndex += 1;
+      return reindexedLine;
+    });
+  }
+
+  private deriveWorkingText(text: string, lines: RenderedLine[]): string {
+    const textLines = splitReviewLines(text);
+    if (textLines.length !== lines.length) {
+      throw new Error("rendered line mismatch");
+    }
+
+    return joinReviewLines(
+      textLines.filter((_, index) => lines[index]?.kind !== "removed")
+    );
+  }
+
   private async acceptRejectBlock(
     accept: boolean,
     block: ReviewBlock
   ): Promise<void> {
-    const editor = await this.ensureEditor();
-    if (!editor) {
+    const slice = this.renderedBlockSlices.get(block.id);
+    if (!slice) {
       return;
     }
 
-    this.applying = true;
+    this.clearRecomputeTimer();
 
-    try {
-      const removedSegments = getBlockSegments(block, "removed").sort(
-        (left, right) => right.startOffset - left.startOffset
+    if (accept) {
+      const baselineRange = this.resolveLineReplaceRange(
+        slice,
+        "baselineLineIndex"
       );
-      const addedSegments = getBlockSegments(block, "added").sort(
-        (left, right) => right.startOffset - left.startOffset
+      this.session.baselineText = this.replaceTextLines(
+        this.session.baselineText,
+        baselineRange.start,
+        baselineRange.end,
+        block.proposedLines
       );
-
-      if (accept) {
-        for (const segment of removedSegments) {
-          await this.deleteLinesAt(
-            block.startLine + segment.startOffset,
-            segment.lines.length
-          );
-        }
-
-        if (removedSegments.length > 0) {
-          this.currentSelectionLineCount -= block.numRed;
-          this.shiftBlocksAfter(block.startLine, -block.numRed);
-        }
-      } else {
-        for (const segment of addedSegments) {
-          await this.deleteLinesAt(
-            block.startLine + segment.startOffset,
-            segment.lines.length
-          );
-        }
-
-        if (addedSegments.length > 0) {
-          this.currentSelectionLineCount -= block.numGreen;
-        }
-
-        if (addedSegments.length > 0) {
-          this.shiftBlocksAfter(block.startLine, -block.numGreen);
-        }
-      }
-    } finally {
-      this.applying = false;
+    } else {
+      const workingRange = this.resolveLineReplaceRange(slice, "workingLineIndex");
+      this.session.workingText = this.replaceTextLines(
+        this.session.workingText,
+        workingRange.start,
+        workingRange.end,
+        block.originalLines
+      );
     }
 
-    this.session.blocks = this.session.blocks.filter(
-      (candidate) => candidate.id !== block.id
-    );
-
-    if (this.session.blocks.length === 0) {
-      this.close();
-      return;
-    }
-
-    this.refresh();
+    await this.recomputeSession();
   }
 
-  private shiftBlocksAfter(startLine: number, offset: number): void {
-    if (offset === 0) {
-      return;
+  private resolveLineReplaceRange(
+    slice: RenderedBlockSlice,
+    key: "baselineLineIndex" | "workingLineIndex"
+  ): { start: number; end: number } {
+    const localStart = slice.startLine - this.session.selectionStartLine;
+    const localEnd = slice.endLine - this.session.selectionStartLine;
+    const blockLines = this.renderedLines.slice(localStart, localEnd + 1);
+    const indexedLines = blockLines
+      .map((line) => line[key])
+      .filter(isDefinedNumber);
+
+    if (indexedLines.length > 0) {
+      return {
+        start: indexedLines[0],
+        end: indexedLines[indexedLines.length - 1] + 1
+      };
     }
 
-    this.session.blocks = this.session.blocks.map((block) =>
-      block.startLine > startLine
-        ? {
-            ...block,
-            startLine: block.startLine + offset
-          }
-        : block
-    );
+    const previousIndex = this.findAdjacentIndexedLine(localStart - 1, -1, key);
+    if (previousIndex !== undefined) {
+      return {
+        start: previousIndex + 1,
+        end: previousIndex + 1
+      };
+    }
+
+    const nextIndex = this.findAdjacentIndexedLine(localEnd + 1, 1, key);
+    if (nextIndex !== undefined) {
+      return {
+        start: nextIndex,
+        end: nextIndex
+      };
+    }
+
+    return { start: 0, end: 0 };
+  }
+
+  private findAdjacentIndexedLine(
+    index: number,
+    step: -1 | 1,
+    key: "baselineLineIndex" | "workingLineIndex"
+  ): number | undefined {
+    for (
+      let currentIndex = index;
+      currentIndex >= 0 && currentIndex < this.renderedLines.length;
+      currentIndex += step
+    ) {
+      const candidate = this.renderedLines[currentIndex]?.[key];
+      if (isDefinedNumber(candidate)) {
+        return candidate;
+      }
+    }
+
+    return undefined;
+  }
+
+  private replaceTextLines(
+    text: string,
+    start: number,
+    end: number,
+    replacementLines: string[]
+  ): string {
+    const lines = splitReviewLines(text);
+    lines.splice(start, Math.max(end - start, 0), ...replacementLines);
+    return joinReviewLines(lines);
   }
 
   private async resolveTargetBlock(
@@ -512,76 +904,156 @@ export class FileReviewController implements vscode.Disposable {
     const cursorLine = editor.selection.active.line;
     return (
       this.session.blocks.find((block) => {
-        const blockEnd = getBlockEndLine(block);
-        return cursorLine >= block.startLine && cursorLine <= blockEnd;
+        const slice = this.renderedBlockSlices.get(block.id);
+        if (!slice) {
+          return false;
+        }
+
+        return cursorLine >= slice.startLine && cursorLine <= slice.endLine;
       }) ?? this.session.blocks[0]
     );
   }
 
-  private currentSelectionRange(document: vscode.TextDocument): vscode.Range {
-    const start = new vscode.Position(this.session.selectionStartLine, 0);
-    const endLine = Math.min(
-      this.session.selectionStartLine +
-        Math.max(this.currentSelectionLineCount - 1, 0),
-      document.lineCount - 1
+  private async recomputeSession(closeWhenClean = true): Promise<void> {
+    this.clearRecomputeTimer();
+
+    const blocks = buildReviewBlocksFromTexts(
+      this.session.baselineText,
+      this.session.workingText
     );
 
-    return new vscode.Range(
-      start,
-      new vscode.Position(endLine, document.lineAt(endLine).text.length)
-    );
-  }
+    if (blocks.length === 0) {
+      this.session.blocks = [];
+      this.renderedBlockSlices.clear();
 
-  private async deleteLinesAt(index: number, count: number): Promise<void> {
-    const editor = await this.ensureEditor();
-    if (!editor || count <= 0) {
+      if (closeWhenClean) {
+        await this.writePlainTextAndClose(this.session.workingText);
+      }
       return;
     }
 
-    await editor.edit(
-      (builder) => {
-        const start = new vscode.Position(index, 0);
-        if (index + count >= editor.document.lineCount) {
-          const line = editor.document.lineAt(editor.document.lineCount - 1);
-          builder.delete(
-            new vscode.Range(
-              start,
-              new vscode.Position(line.lineNumber, line.text.length)
-            )
-          );
-        } else {
-          builder.delete(new vscode.Range(start, new vscode.Position(index + count, 0)));
-        }
-      },
-      { undoStopAfter: false, undoStopBefore: false }
-    );
-  }
-
-  private async replaceLines(
-    index: number,
-    count: number,
-    lines: string[]
-  ): Promise<void> {
     const editor = await this.ensureEditor();
     if (!editor) {
       return;
     }
 
-    await editor.edit(
-      (builder) => {
-        const start = new vscode.Position(index, 0);
-        const endLine = Math.min(
-          index + Math.max(count - 1, 0),
-          editor.document.lineCount - 1
-        );
-        const end = new vscode.Position(
-          endLine,
-          editor.document.lineAt(endLine).text.length
-        );
-        builder.replace(new vscode.Range(start, end), joinReviewLines(lines));
-      },
-      { undoStopAfter: false, undoStopBefore: false }
+    const projection = this.buildRenderedProjection(blocks);
+    await this.replaceEditorText(editor, projection.text, projection.lines);
+
+    this.renderedText = projection.text;
+    this.renderedLines = projection.lines;
+    this.renderedBlockSlices = projection.blockSlices;
+    this.session.blocks = projection.blocks;
+    this.currentSelectionLineCount = projection.lines.length;
+    this.refresh();
+  }
+
+  private scheduleRecompute(): void {
+    this.clearRecomputeTimer();
+    this.recomputeTimer = setTimeout(() => {
+      void this.recomputeSession();
+    }, this.pendingRecomputeDelayMs);
+  }
+
+  private clearRecomputeTimer(): void {
+    if (!this.recomputeTimer) {
+      return;
+    }
+
+    clearTimeout(this.recomputeTimer);
+    this.recomputeTimer = undefined;
+  }
+
+  private computeRecomputeDelay(
+    event: vscode.TextDocumentChangeEvent
+  ): number {
+    const includesMultilineEdit = event.contentChanges.some(
+      (change) =>
+        change.text.includes("\n") ||
+        change.range.start.line !== change.range.end.line
     );
+    if (includesMultilineEdit) {
+      return MULTILINE_RECOMPUTE_DELAY_MS;
+    }
+
+    const editMagnitude = event.contentChanges.reduce((total, change) => {
+      const removedLines = change.range.end.line - change.range.start.line;
+      return total + change.text.length + removedLines * 16;
+    }, 0);
+
+    if (editMagnitude <= 4) {
+      return FAST_RECOMPUTE_DELAY_MS;
+    }
+
+    if (editMagnitude <= 40) {
+      return NORMAL_RECOMPUTE_DELAY_MS;
+    }
+
+    return LARGE_EDIT_RECOMPUTE_DELAY_MS;
+  }
+
+  private async replaceEditorText(
+    editor: vscode.TextEditor,
+    text: string,
+    nextRenderedLines: RenderedLine[]
+  ): Promise<void> {
+    const currentText = normalizeText(editor.document.getText());
+    const replacement = getMinimalTextReplacement(currentText, text);
+    if (!replacement) {
+      return;
+    }
+
+    const previousSelections = this.captureLogicalSelections(editor);
+
+    this.applying = true;
+
+    try {
+      await editor.edit(
+        (builder) => {
+          builder.replace(
+            new vscode.Range(
+              editor.document.positionAt(replacement.startOffset),
+              editor.document.positionAt(replacement.endOffset)
+            ),
+            replacement.text
+          );
+        },
+        { undoStopAfter: false, undoStopBefore: false }
+      );
+    } finally {
+      this.applying = false;
+    }
+
+    editor.selections = previousSelections.map((selection) =>
+      this.resolveLogicalSelection(selection, editor.document, nextRenderedLines)
+    );
+  }
+
+  private async writePlainTextAndClose(text: string): Promise<void> {
+    const editor = await this.ensureEditor();
+    const nextRenderedLines = this.buildPlainRenderedLines(text);
+    if (editor) {
+      await this.replaceEditorText(editor, text, nextRenderedLines);
+    }
+
+    this.renderedText = text;
+    this.renderedLines = nextRenderedLines;
+    this.currentSelectionLineCount = this.renderedLines.length;
+    this.close();
+  }
+
+  private async restoreLastKnownWorkingTextAndClose(): Promise<void> {
+    const editor = await this.ensureEditor();
+    const nextRenderedLines = this.buildPlainRenderedLines(this.session.workingText);
+    if (editor) {
+      await this.replaceEditorText(
+        editor,
+        this.session.workingText,
+        nextRenderedLines
+      );
+    }
+
+    this.close();
   }
 
   private async ensureEditor(): Promise<vscode.TextEditor | undefined> {
@@ -606,7 +1078,116 @@ export class FileReviewController implements vscode.Disposable {
     }
   }
 
+  private captureLogicalSelections(editor: vscode.TextEditor): LogicalSelection[] {
+    return editor.selections.map((selection) => ({
+      anchor: this.toLogicalSelectionPoint(selection.anchor, editor.document),
+      active: this.toLogicalSelectionPoint(selection.active, editor.document),
+      isReversed: selection.isReversed
+    }));
+  }
+
+  private toLogicalSelectionPoint(
+    position: vscode.Position,
+    document: vscode.TextDocument
+  ): LogicalSelectionPoint {
+    const safeLine = Math.max(
+      0,
+      Math.min(position.line, Math.max(this.renderedLines.length - 1, 0))
+    );
+    const renderedLine = this.renderedLines[safeLine] ?? {
+      kind: "context" as const
+    };
+    const lineLength = document.lineAt(safeLine).text.length;
+
+    return {
+      kind: renderedLine.kind,
+      baselineLineIndex: renderedLine.baselineLineIndex,
+      workingLineIndex: renderedLine.workingLineIndex,
+      character: Math.min(position.character, lineLength)
+    };
+  }
+
+  private resolveLogicalSelection(
+    selection: LogicalSelection,
+    document: vscode.TextDocument,
+    nextRenderedLines: RenderedLine[]
+  ): vscode.Selection {
+    const anchor = this.resolveLogicalSelectionPoint(
+      selection.anchor,
+      document,
+      nextRenderedLines
+    );
+    const active = this.resolveLogicalSelectionPoint(
+      selection.active,
+      document,
+      nextRenderedLines
+    );
+
+    return selection.isReversed
+      ? new vscode.Selection(active, anchor)
+      : new vscode.Selection(anchor, active);
+  }
+
+  private resolveLogicalSelectionPoint(
+    point: LogicalSelectionPoint,
+    document: vscode.TextDocument,
+    nextRenderedLines: RenderedLine[]
+  ): vscode.Position {
+    const resolvedLine = this.findRenderedLineIndex(point, nextRenderedLines);
+    const safeLine = Math.max(
+      0,
+      Math.min(resolvedLine, Math.max(document.lineCount - 1, 0))
+    );
+    const lineLength = document.lineAt(safeLine).text.length;
+
+    return new vscode.Position(safeLine, Math.min(point.character, lineLength));
+  }
+
+  private findRenderedLineIndex(
+    point: LogicalSelectionPoint,
+    nextRenderedLines: RenderedLine[]
+  ): number {
+    if (point.workingLineIndex !== undefined) {
+      const exactWorkingMatch = nextRenderedLines.findIndex(
+        (line) =>
+          line.workingLineIndex === point.workingLineIndex &&
+          line.kind === point.kind
+      );
+      if (exactWorkingMatch >= 0) {
+        return exactWorkingMatch;
+      }
+
+      const fallbackWorkingMatch = nextRenderedLines.findIndex(
+        (line) => line.workingLineIndex === point.workingLineIndex
+      );
+      if (fallbackWorkingMatch >= 0) {
+        return fallbackWorkingMatch;
+      }
+    }
+
+    if (point.baselineLineIndex !== undefined) {
+      const exactBaselineMatch = nextRenderedLines.findIndex(
+        (line) =>
+          line.baselineLineIndex === point.baselineLineIndex &&
+          line.kind === point.kind
+      );
+      if (exactBaselineMatch >= 0) {
+        return exactBaselineMatch;
+      }
+
+      const fallbackBaselineMatch = nextRenderedLines.findIndex(
+        (line) => line.baselineLineIndex === point.baselineLineIndex
+      );
+      if (fallbackBaselineMatch >= 0) {
+        return fallbackBaselineMatch;
+      }
+    }
+
+    return 0;
+  }
+
   private close(): void {
+    this.clearRecomputeTimer();
     this.clearDecorations();
     this.disposed = true;
     this.onDidClose(this.session.uri);

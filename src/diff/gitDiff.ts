@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
+import { createReviewBlock } from "../review/engine";
 import { ReviewBlock } from "../review/types";
 
 const execFileAsync = promisify(execFile);
@@ -28,27 +29,21 @@ export interface ParsedFilePatch {
 export function buildReviewBlocksFromFilePatch(
   filePatch: ParsedFilePatch
 ): ReviewBlock[] {
-  return filePatch.hunks.map((hunk, index) => ({
-    id: `block-${index}`,
-    startLine: Math.max(0, hunk.oldStart - 1),
-    numRed: hunk.oldCount,
-    numGreen: hunk.newCount,
-    originalLines: hunk.lines
-      .filter((line) => line.type === "del")
-      .map((line) => line.content),
-    proposedLines: hunk.lines
-      .filter((line) => line.type === "add")
-      .map((line) => line.content),
-    lines: hunk.lines.map((line) => ({
-      type:
-        line.type === "context"
-          ? "context"
-          : line.type === "del"
-            ? "removed"
-            : "added",
-      content: line.content
-    }))
-  }));
+  return filePatch.hunks.map((hunk, index) =>
+    createReviewBlock(
+      `block-${index}`,
+      Math.max(0, hunk.oldStart - 1),
+      hunk.lines.map((line) => ({
+        type:
+          line.type === "context"
+            ? "context"
+            : line.type === "del"
+              ? "removed"
+              : "added",
+        content: line.content
+      }))
+    )
+  );
 }
 
 function normalizePatchPath(value: string | null): string | null {
