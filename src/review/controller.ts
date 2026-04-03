@@ -90,6 +90,38 @@ function normalizeText(text: string): string {
 }
 
 function buildBlockEditSegments(block: ReviewBlock): BlockEditSegment[] {
+  return buildLineSegments(block.lines);
+}
+
+function buildDisplayBlockEditSegments(block: ReviewBlock): BlockEditSegment[] {
+  return buildLineSegments(
+    block.lines.map((line, index, lines) => {
+      if (line.type !== "context" || line.content !== "") {
+        return line;
+      }
+
+      const previousLine = lines[index - 1];
+      const nextLine = lines[index + 1];
+      if (previousLine?.content === "" && previousLine.type !== "context") {
+        return {
+          ...line,
+          type: previousLine.type
+        };
+      }
+
+      if (nextLine?.content === "" && nextLine.type !== "context") {
+        return {
+          ...line,
+          type: nextLine.type
+        };
+      }
+
+      return line;
+    })
+  );
+}
+
+function buildLineSegments(lines: ReviewBlock["lines"]): BlockEditSegment[] {
   const segments: BlockEditSegment[] = [];
   let current: BlockEditSegment | undefined;
 
@@ -102,7 +134,7 @@ function buildBlockEditSegments(block: ReviewBlock): BlockEditSegment[] {
     current = undefined;
   };
 
-  block.lines.forEach((line, index) => {
+  lines.forEach((line, index) => {
     if (line.type === "context") {
       flush();
       return;
@@ -466,7 +498,9 @@ export class FileReviewController implements vscode.Disposable {
         continue;
       }
 
-      const removedSegments = getBlockSegments(block, "removed");
+      const removedSegments = buildDisplayBlockEditSegments(block).filter(
+        (segment) => segment.type === "removed"
+      );
       for (const [index, removedSegment] of removedSegments.entries()) {
         removedDecorations.push({
           range: getSegmentRange(slice, removedSegment, editor.document),
@@ -481,7 +515,9 @@ export class FileReviewController implements vscode.Disposable {
         });
       }
 
-      const addedSegments = getBlockSegments(block, "added");
+      const addedSegments = buildDisplayBlockEditSegments(block).filter(
+        (segment) => segment.type === "added"
+      );
       for (const [index, addedSegment] of addedSegments.entries()) {
         insertedDecorations.push({
           range: getSegmentRange(slice, addedSegment, editor.document),
