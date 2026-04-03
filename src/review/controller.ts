@@ -18,6 +18,7 @@ const FAST_RECOMPUTE_DELAY_MS = 45;
 const NORMAL_RECOMPUTE_DELAY_MS = 90;
 const LARGE_EDIT_RECOMPUTE_DELAY_MS = 120;
 const MULTILINE_RECOMPUTE_DELAY_MS = 180;
+const IMMEDIATE_RECOMPUTE_DELAY_MS = 0;
 
 type RenderedLineKind = "context" | "removed" | "added";
 
@@ -240,10 +241,20 @@ function getMinimalTextReplacement(
     endOffset = startOffset;
   }
 
+  const hasSuffix = nextSuffixIndex + 1 < nextLines.length;
+  const replacementLines = nextLines.slice(firstDifferentLine, nextSuffixIndex + 1);
+  let replacementText = replacementLines.join("\n");
+
+  // When we replace a whole-line region before unchanged suffix lines, the
+  // inserted text must end with a newline so the suffix stays on its own line.
+  if (hasSuffix && replacementText.length > 0) {
+    replacementText += "\n";
+  }
+
   return {
     startOffset,
     endOffset,
-    text: nextLines.slice(firstDifferentLine, nextSuffixIndex + 1).join("\n")
+    text: replacementText
   };
 }
 
@@ -472,6 +483,11 @@ export class FileReviewController implements vscode.Disposable {
     }
 
     this.pendingRecomputeDelayMs = this.computeRecomputeDelay(event);
+    if (this.pendingRecomputeDelayMs === IMMEDIATE_RECOMPUTE_DELAY_MS) {
+      await this.recomputeSession();
+      return;
+    }
+
     this.scheduleRecompute();
   }
 
@@ -1003,6 +1019,22 @@ export class FileReviewController implements vscode.Disposable {
   private computeRecomputeDelay(
     event: vscode.TextDocumentChangeEvent
   ): number {
+    const includesStructuralLineChange = event.contentChanges.some(
+      (change) =>
+        change.range.start.line !== change.range.end.line ||
+        (change.rangeLength > 0 && change.text.includes("\n"))
+    );
+    if (includesStructuralLineChange) {
+      return IMMEDIATE_RECOMPUTE_DELAY_MS;
+    }
+
+    const includesIntraLineReplacement = event.contentChanges.some(
+      (change) => change.rangeLength > 0
+    );
+    if (includesIntraLineReplacement) {
+      return IMMEDIATE_RECOMPUTE_DELAY_MS;
+    }
+
     const includesMultilineEdit = event.contentChanges.some(
       (change) =>
         change.text.includes("\n") ||
