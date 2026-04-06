@@ -1,0 +1,108 @@
+{
+  "name": "latch-plugin",
+  "displayName": "Latch Review",
+  "description": "Review git diff sessions with hunk-level accept and reject actions.",
+  "version": "0.0.1",
+  "publisher": "latch",
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:latch.startReviewSession",
+    "onView:latch.review"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "latch.startReviewSession",
+        "title": "Latch: Start Review Session"
+      },
+      {
+        "command": "latch.resumeReviewSession",
+        "title": "Latch: Resume Review Session"
+      },
+      {
+        "command": "latch.acceptHunk",
+        "title": "Latch: Accept Hunk"
+      },
+      {
+        "command": "latch.rejectHunk",
+        "title": "Latch: Reject Hunk"
+      },
+      {
+        "command": "latch.inspectDeletedText",
+        "title": "Latch: Inspect Deleted Text"
+      },
+      {
+        "command": "latch.nextHunk",
+        "title": "Latch: Next Hunk"
+      },
+      {
+        "command": "latch.previousHunk",
+        "title": "Latch: Previous Hunk"
+      },
+      {
+        "command": "latch.openReviewItem",
+        "title": "Latch: Open Review Item"
+      },
+      {
+        "command": "latch.inspectParsedGitDiff",
+        "title": "Latch: Inspect Parsed Git Diff"
+      }
+    ],
+    "configurationDefaults": {
+      "diffEditor.codeLens": true
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "latch",
+          "title": "Latch Review",
+          "icon": "media/latch.svg"
+        }
+      ]
+    },
+    "views": {
+      "latch": [
+        {
+          "id": "latch.review",
+          "name": "Review Session"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "latch.openReviewItem",
+          "when": "view == latch.review",
+          "group": "inline"
+        },
+        {
+          "command": "latch.acceptHunk",
+          "when": "view == latch.review && viewItem == latchReviewHunk",
+          "group": "inline"
+        },
+        {
+          "command": "latch.rejectHunk",
+          "when": "view == latch.review && viewItem == latchReviewHunk",
+          "group": "inline@2"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test \"out/test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "@types/vscode": "^1.99.0",
+    "typescript": "^5.8.3"
+  }
+}
