@@ -4,7 +4,7 @@ function normalizeText(text: string): string {
 	return text.replace(/\r\n/g, '\n');
 }
 
-function splitLines(text: string): { lines: string[]; trailingNewline: boolean } {
+export function splitLines(text: string): { lines: string[]; trailingNewline: boolean } {
 	const normalized = normalizeText(text);
 	if (normalized.length === 0) {
 		return { lines: [], trailingNewline: false };
@@ -19,7 +19,7 @@ function splitLines(text: string): { lines: string[]; trailingNewline: boolean }
 	return { lines: parts, trailingNewline };
 }
 
-function joinLines(lines: string[], trailingNewline: boolean): string {
+export function joinLines(lines: string[], trailingNewline: boolean): string {
 	const text = lines.join('\n');
 	return trailingNewline ? `${text}\n` : text;
 }

@@ -55,9 +55,6 @@
         "title": "Latch: Inspect Parsed Git Diff"
       }
     ],
-    "configurationDefaults": {
-      "diffEditor.codeLens": true
-    },
     "viewsContainers": {
       "activitybar": [
         {

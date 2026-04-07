@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { GitDiffReviewSessionInput, ParsedDiffFile, PersistedReviewSession, ReviewCounts, ReviewFile, ReviewHunk, ReviewHunkKind, ReviewHunkState, ReviewSession } from '../types';
 import { parseGitDiff } from '../parser/gitDiffParser';
-import { reconstructOriginalText } from './originalContent';
+import { reconstructOriginalText, splitLines, joinLines } from './originalContent';
 import { LATCH_REVIEW_ORIGINAL_SCHEME } from './originalContentProvider';
 
 const STORAGE_KEY = 'latch.reviewSession';
@@ -77,7 +77,29 @@ export class ReviewSessionService implements vscode.Disposable {
 
 	public getOriginalText(uri: vscode.Uri): string | undefined {
 		const fileId = uri.query;
-		return this.session?.files.find(file => file.id === fileId)?.originalText;
+		const file = this.session?.files.find(f => f.id === fileId);
+		if (!file) {
+			return undefined;
+		}
+
+		const acceptedHunks = file.hunks.filter(h => h.state === 'accepted');
+		if (acceptedHunks.length === 0) {
+			return file.originalText;
+		}
+
+		// For accepted hunks, replace the original lines with proposed lines so the
+		// diff editor shows no difference at those positions (decorator disappears).
+		const { lines, trailingNewline } = splitLines(file.originalText);
+		const workingLines = [...lines];
+
+		for (const hunk of [...acceptedHunks].sort((a, b) => b.oldStart - a.oldStart)) {
+			const startIndex = Math.max(0, hunk.oldStart - 1);
+			const originalLines = hunk.originalText.split('\n');
+			const proposedLines = hunk.proposedText.split('\n');
+			workingLines.splice(startIndex, originalLines.length, ...proposedLines);
+		}
+
+		return joinLines(workingLines, trailingNewline);
 	}
 
 	public isExpanded(fileId: string): boolean {
@@ -249,6 +271,7 @@ export class ReviewSessionService implements vscode.Disposable {
 				displayOldLineCount: parsedHunk.displayOldLineCount,
 				displayNewStart: parsedHunk.displayNewStart,
 				displayNewLineCount: parsedHunk.displayNewLineCount,
+				displayNewBlockStarts: parsedHunk.displayNewBlockStarts,
 				originalText: parsedHunk.originalLines.join('\n'),
 				proposedText: parsedHunk.proposedLines.join('\n'),
 				anchorLine,
@@ -328,12 +351,7 @@ export class ReviewSessionService implements vscode.Disposable {
 	}
 
 	private doesDocumentMatchProposedState(document: vscode.TextDocument, hunk: ReviewHunk): boolean {
-		const range = this.getProposedRange(document, hunk);
-		if (!range) {
-			return false;
-		}
-
-		return document.getText(range) === hunk.proposedText;
+		return this.findProposedRange(document, hunk) !== undefined;
 	}
 
 	private getProposedRange(document: vscode.TextDocument, hunk: ReviewHunk): vscode.Range | undefined {
@@ -355,23 +373,59 @@ export class ReviewSessionService implements vscode.Disposable {
 		}
 
 		const start = new vscode.Position(startLine, 0);
-		const end = startLine + hunk.newLineCount >= document.lineCount
+		const lastLine = startLine + hunk.newLineCount - 1;
+		const end = lastLine >= document.lineCount - 1
 			? document.lineAt(document.lineCount - 1).range.end
-			: new vscode.Position(startLine + hunk.newLineCount, 0);
+			: document.lineAt(lastLine).range.end;
 		return new vscode.Range(start, end);
 	}
 
+	private findProposedRange(document: vscode.TextDocument, hunk: ReviewHunk): vscode.Range | undefined {
+		// Delete-only hunks have no proposed content to search for; use position-based range.
+		if (hunk.newLineCount === 0) {
+			return this.getProposedRange(document, hunk);
+		}
+
+		// Try the expected position first (fast path).
+		const expectedRange = this.getProposedRange(document, hunk);
+		if (expectedRange && document.getText(expectedRange) === hunk.proposedText) {
+			return expectedRange;
+		}
+
+		// Fall back to scanning the document for the proposed text.
+		// This handles cases where lines were added/deleted above the hunk,
+		// shifting the content away from its original position.
+		const firstProposedLine = hunk.proposedText.split('\n')[0] ?? '';
+		const expectedStartLine = hunk.newStart - 1;
+		let bestRange: vscode.Range | undefined;
+		let bestDistance = Infinity;
+
+		for (let i = 0; i <= document.lineCount - hunk.newLineCount; i++) {
+			if (document.lineAt(i).text !== firstProposedLine) {
+				continue;
+			}
+
+			const start = new vscode.Position(i, 0);
+			const lastLineIdx = i + hunk.newLineCount - 1;
+			const end = lastLineIdx >= document.lineCount - 1
+				? document.lineAt(document.lineCount - 1).range.end
+				: document.lineAt(lastLineIdx).range.end;
+			const range = new vscode.Range(start, end);
+
+			if (document.getText(range) === hunk.proposedText) {
+				const distance = Math.abs(i - expectedStartLine);
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					bestRange = range;
+				}
+			}
+		}
+
+		return bestRange;
+	}
+
 	private computeRejectRange(document: vscode.TextDocument, hunk: ReviewHunk): vscode.Range | undefined {
-		const range = this.getProposedRange(document, hunk);
-		if (!range) {
-			return undefined;
-		}
-
-		if (document.getText(range) !== hunk.proposedText) {
-			return undefined;
-		}
-
-		return range;
+		return this.findProposedRange(document, hunk);
 	}
 
 	private async ensureHunkApplicable(hunk: ReviewHunk, requireProposedMatch: boolean): Promise<void> {
@@ -402,17 +456,28 @@ export class ReviewSessionService implements vscode.Disposable {
 	}
 
 	private async openFile(file: ReviewFile, hunk?: ReviewHunk): Promise<void> {
+		const config = vscode.workspace.getConfiguration('diffEditor');
+		if (!config.get<boolean>('codeLens')) {
+			await config.update('codeLens', true, vscode.ConfigurationTarget.Global);
+		}
+
 		const targetLine = hunk
 			? Math.max(1, hunk.kind === 'delete' ? hunk.anchorLine : hunk.displayNewStart)
 			: 1;
 		const selection = new vscode.Range(targetLine - 1, 0, targetLine - 1, 0);
 		const titleSuffix = this.session?.title ? ` (${this.session.title})` : '';
+		const diffOptions = {
+			preview: false,
+			preserveFocus: false,
+			selection,
+			renderSideBySide: false
+		};
 		await vscode.commands.executeCommand(
 			'vscode.diff',
 			file.originalUri,
 			file.uri,
 			`${path.basename(file.path)}${titleSuffix}`,
-			{ preview: false, preserveFocus: false, selection }
+			diffOptions
 		);
 
 		if (hunk) {

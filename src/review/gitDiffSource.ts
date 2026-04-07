@@ -5,6 +5,10 @@ import { parseGitDiff } from '../parser/gitDiffParser';
 
 const execFileAsync = promisify(execFile);
 
+function getErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 async function readGitDiffFromFolder(folder: vscode.WorkspaceFolder): Promise<string> {
 	const primary = await execFileAsync('git', ['diff', '--no-ext-diff', '--relative'], {
 		cwd: folder.uri.fsPath,
@@ -24,8 +28,16 @@ async function readGitDiffFromFolder(folder: vscode.WorkspaceFolder): Promise<st
 }
 
 export async function resolveGitDiffText(candidate: string | undefined): Promise<string> {
-	if (candidate && parseGitDiff(candidate).length > 0) {
-		return candidate;
+	if (candidate !== undefined) {
+		try {
+			if (parseGitDiff(candidate).length > 0) {
+				return candidate;
+			}
+		} catch (error) {
+			throw new Error(`Unable to parse the provided git diff payload: ${getErrorMessage(error)}`);
+		}
+
+		throw new Error('The provided git diff payload did not contain any file hunks.');
 	}
 
 	const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -33,15 +45,17 @@ export async function resolveGitDiffText(candidate: string | undefined): Promise
 		throw new Error('No workspace folder is open.');
 	}
 
+	const gitDiff = await readGitDiffFromFolder(workspaceFolder).catch(error => {
+		throw new Error(`Unable to read git diff from ${workspaceFolder.name}: ${getErrorMessage(error)}`);
+	});
+
 	try {
-		const gitDiff = await readGitDiffFromFolder(workspaceFolder);
 		if (parseGitDiff(gitDiff).length > 0) {
 			return gitDiff;
 		}
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Unable to read git diff from ${workspaceFolder.name}: ${message}`);
+		throw new Error(`Unable to parse the current workspace git diff from ${workspaceFolder.name}: ${getErrorMessage(error)}`);
 	}
 
-	throw new Error('No git diff with file hunks was found in the current workspace.');
+	throw new Error(`The current workspace git diff from ${workspaceFolder.name} did not contain any file hunks.`);
 }

@@ -28,6 +28,7 @@ export interface ParsedHunk {
 	displayOldLineCount: number;
 	displayNewStart: number;
 	displayNewLineCount: number;
+	displayNewBlockStarts: number[];
 	originalLines: string[];
 	proposedLines: string[];
 	header: string;
@@ -53,6 +54,7 @@ export interface ReviewHunk {
 	displayOldLineCount: number;
 	displayNewStart: number;
 	displayNewLineCount: number;
+	displayNewBlockStarts: number[];
 	originalText: string;
 	proposedText: string;
 	anchorLine: number;

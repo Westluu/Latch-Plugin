@@ -1,6 +1,4 @@
 import * as vscode from 'vscode';
-import { ReviewCodeLensProvider } from './editor/reviewCodeLensProvider';
-import { ReviewDecorationController } from './editor/reviewDecorationController';
 import { parseGitDiff } from './parser/gitDiffParser';
 import { resolveGitDiffText } from './review/gitDiffSource';
 import { OriginalContentProvider, LATCH_REVIEW_ORIGINAL_SCHEME } from './review/originalContentProvider';
@@ -8,6 +6,7 @@ import { ReviewSessionService } from './review/reviewSessionService';
 import { buildReviewSessionInputFromDiff } from './review/sessionInputFactory';
 import { GitDiffReviewSessionInput, ReviewFile, ReviewHunk } from './types';
 import { ReviewTreeDataProvider, ReviewTreeItem } from './views/reviewTreeDataProvider';
+import { ReviewCodeLensProvider } from './editor/reviewCodeLensProvider';
 
 function asHunk(item: ReviewTreeItem | ReviewHunk | undefined, sessionService: ReviewSessionService): ReviewHunk | undefined {
 	if (!item) {
@@ -22,57 +21,41 @@ function asHunk(item: ReviewTreeItem | ReviewHunk | undefined, sessionService: R
 	return item;
 }
 
-async function ensureDiffCodeLensVisible(): Promise<void> {
-	const config = vscode.workspace.getConfiguration('diffEditor');
-	if (config.get<boolean>('codeLens', true)) {
-		return;
-	}
-
-	const choice = await vscode.window.showWarningMessage(
-		'Latch uses CodeLens in the native diff editor for Accept and Reject actions. Enable diff editor CodeLens?',
-		'Enable',
-		'Not Now'
-	);
-	if (choice === 'Enable') {
-		await config.update('codeLens', true, vscode.ConfigurationTarget.Global);
-	}
-}
-
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
 	const sessionService = new ReviewSessionService(context);
 	const originalContentProvider = new OriginalContentProvider(sessionService);
 	const treeDataProvider = new ReviewTreeDataProvider(sessionService);
 	const treeView = vscode.window.createTreeView('latch.review', { treeDataProvider, showCollapseAll: true });
-	const decorationController = new ReviewDecorationController(sessionService);
-	const codeLensProvider = new ReviewCodeLensProvider(sessionService);
 
-	context.subscriptions.push(sessionService, treeView, decorationController, originalContentProvider);
-	context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLensProvider));
+	const codeLensProvider = new ReviewCodeLensProvider(sessionService);
+	context.subscriptions.push(sessionService, treeView, originalContentProvider, codeLensProvider);
 	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(LATCH_REVIEW_ORIGINAL_SCHEME, originalContentProvider));
+	context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLensProvider));
 
 	treeView.onDidExpandElement(event => sessionService.setExpanded((event.element as ReviewFile).id, true));
 	treeView.onDidCollapseElement(event => sessionService.setExpanded((event.element as ReviewFile).id, false));
 
 	context.subscriptions.push(vscode.commands.registerCommand('latch.startReviewSession', async (input?: GitDiffReviewSessionInput) => {
+		const launchedWithoutPayload = !input;
 		let resolvedInput = input;
 		if (!resolvedInput?.sessionId || resolvedInput.source?.kind !== 'gitDiff' || typeof resolvedInput.source.diffText !== 'string') {
 			try {
 				const diffText = await resolveGitDiffText(undefined);
 				resolvedInput = buildReviewSessionInputFromDiff(diffText);
 			} catch (error) {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				const sourceNote = launchedWithoutPayload
+					? 'Latch was started from the Command Palette without a payload, so it fell back to the current workspace git diff.'
+					: 'Latch fell back to the current workspace git diff.';
 				void vscode.window.showErrorMessage(
-					error instanceof Error
-						? `${error.message} Open a workspace with git changes or invoke latch.startReviewSession with a GitDiffReviewSessionInput payload.`
-						: 'Open a workspace with git changes or invoke latch.startReviewSession with a GitDiffReviewSessionInput payload.'
+					`${sourceNote} ${errorMessage} Open a workspace with git changes or invoke latch.startReviewSession with a GitDiffReviewSessionInput payload.`
 				);
 				return;
 			}
 		}
 
 		await sessionService.startReviewSession(resolvedInput);
-		await ensureDiffCodeLensVisible();
 		treeDataProvider.refresh();
-		decorationController.render();
 		await vscode.commands.executeCommand('setContext', 'latch.hasReviewSession', true);
 		const firstFile = sessionService.getReviewFiles()[0];
 		if (firstFile) {
@@ -91,9 +74,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		}
 
 		treeDataProvider.refresh();
-		decorationController.render();
 		await vscode.commands.executeCommand('setContext', 'latch.hasReviewSession', true);
-		await ensureDiffCodeLensVisible();
 		const activeFileId = sessionService.getSession()?.activeFileId;
 		const activeItem = activeFileId
 			? sessionService.getFileById(activeFileId)?.hunks.find(hunk => hunk.id === sessionService.getSession()?.activeHunkId)
@@ -140,7 +121,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		try {
 			await sessionService.acceptHunk(hunk);
 			treeDataProvider.refresh();
-			decorationController.render();
 		} catch (error) {
 			void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
 		}
@@ -155,7 +135,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		try {
 			await sessionService.rejectHunk(hunk);
 			treeDataProvider.refresh();
-			decorationController.render();
 		} catch (error) {
 			void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
 		}
@@ -186,7 +165,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	await vscode.commands.executeCommand('setContext', 'latch.hasReviewSession', restored);
 	if (restored) {
 		treeDataProvider.refresh();
-		decorationController.render();
 	}
 }
 
