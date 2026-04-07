@@ -30,16 +30,19 @@ export function buildReviewSessionInputFromDiff(diffText: string, title?: string
 		const fileId = createStableId('file', file.path);
 		identity.files[file.path] = {
 			fileId,
-			hunkIds: file.hunks.map((hunk, index) => createStableId(
-				'hunk',
-				file.path,
-				String(index),
-				hunk.header,
-				String(hunk.oldStart),
-				String(hunk.newStart),
-				hunk.originalLines.join('\n'),
-				hunk.proposedLines.join('\n')
-			))
+			hunkIds: file.hunks.flatMap((hunk, hunkIndex) =>
+				hunk.blocks.map((block, blockIndex) => createStableId(
+					'hunk',
+					file.path,
+					String(hunkIndex),
+					String(blockIndex),
+					hunk.header,
+					String(block.oldStart),
+					String(block.newStart),
+					block.originalLines.join('\n'),
+					block.proposedLines.join('\n')
+				))
+			)
 		};
 	}
 

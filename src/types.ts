@@ -19,6 +19,15 @@ export interface GitDiffReviewSessionInput {
 export type ReviewHunkKind = 'insert' | 'delete' | 'replace';
 export type ReviewHunkState = 'pending' | 'accepted' | 'rejected' | 'conflicted' | 'stale';
 
+export interface ParsedHunkBlock {
+	oldStart: number;
+	oldLineCount: number;
+	newStart: number;
+	newLineCount: number;
+	originalLines: string[];
+	proposedLines: string[];
+}
+
 export interface ParsedHunk {
 	oldStart: number;
 	oldLineCount: number;
@@ -32,6 +41,7 @@ export interface ParsedHunk {
 	originalLines: string[];
 	proposedLines: string[];
 	header: string;
+	blocks: ParsedHunkBlock[];
 }
 
 export interface ParsedDiffFile {

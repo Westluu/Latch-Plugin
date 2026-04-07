@@ -1,4 +1,4 @@
-import { ParsedDiffFile, ParsedHunk } from '../types';
+import { ParsedDiffFile, ParsedHunk, ParsedHunkBlock } from '../types';
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
 
@@ -14,21 +14,49 @@ function normalizePath(rawPath: string): string {
 	return rawPath;
 }
 
+interface CurrentBlock {
+	oldStart: number;
+	newStart: number;
+	originalLines: string[];
+	proposedLines: string[];
+}
+
+function finalizeBlock(currentBlock: CurrentBlock, currentHunk: ParsedHunk): void {
+	if (currentBlock.originalLines.length === 0 && currentBlock.proposedLines.length === 0) {
+		return;
+	}
+	const block: ParsedHunkBlock = {
+		oldStart: currentBlock.oldStart,
+		oldLineCount: currentBlock.originalLines.length,
+		newStart: currentBlock.newStart,
+		newLineCount: currentBlock.proposedLines.length,
+		originalLines: [...currentBlock.originalLines],
+		proposedLines: [...currentBlock.proposedLines]
+	};
+	currentHunk.blocks.push(block);
+	currentBlock.originalLines.length = 0;
+	currentBlock.proposedLines.length = 0;
+}
+
 export function parseGitDiff(diffText: string): ParsedDiffFile[] {
 	const lines = diffText.split(/\r?\n/);
 	const files: ParsedDiffFile[] = [];
 	let currentFile: ParsedDiffFile | undefined;
 	let currentHunk: ParsedHunk | undefined;
 	let hunkCurrentNewLine = 0;
+	let hunkCurrentOldLine = 0;
 	let hunkInChangeBlock = false;
+	let currentBlock: CurrentBlock | undefined;
 
 	for (const line of lines) {
 		if (line.startsWith('diff --git ')) {
 			if (currentHunk && currentFile) {
+				if (currentBlock) { finalizeBlock(currentBlock, currentHunk); }
 				currentFile.hunks.push(currentHunk);
 			}
 			currentHunk = undefined;
 			currentFile = undefined;
+			currentBlock = undefined;
 			continue;
 		}
 
@@ -50,6 +78,7 @@ export function parseGitDiff(diffText: string): ParsedDiffFile[] {
 			}
 
 			if (currentHunk) {
+				if (currentBlock) { finalizeBlock(currentBlock, currentHunk); }
 				currentFile.hunks.push(currentHunk);
 			}
 
@@ -59,21 +88,25 @@ export function parseGitDiff(diffText: string): ParsedDiffFile[] {
 				throw new Error(`Invalid hunk header: ${line}`);
 			}
 			const newStartNum = Number.parseInt(newStart, 10);
+			const oldStartNum = Number.parseInt(oldStart, 10);
 			hunkCurrentNewLine = newStartNum;
+			hunkCurrentOldLine = oldStartNum;
 			hunkInChangeBlock = false;
+			currentBlock = undefined;
 			currentHunk = {
-				oldStart: Number.parseInt(oldStart, 10),
+				oldStart: oldStartNum,
 				oldLineCount: parseCount(match[2]),
 				newStart: newStartNum,
 				newLineCount: parseCount(match[4]),
-				displayOldStart: Number.parseInt(oldStart, 10),
+				displayOldStart: oldStartNum,
 				displayOldLineCount: 0,
 				displayNewStart: newStartNum,
 				displayNewLineCount: 0,
 				displayNewBlockStarts: [],
 				header: (match[5] ?? '').trim(),
 				originalLines: [],
-				proposedLines: []
+				proposedLines: [],
+				blocks: []
 			};
 			continue;
 		}
@@ -86,12 +119,15 @@ export function parseGitDiff(diffText: string): ParsedDiffFile[] {
 			if (!hunkInChangeBlock) {
 				hunkInChangeBlock = true;
 				currentHunk.displayNewBlockStarts.push(hunkCurrentNewLine);
+				currentBlock = { oldStart: hunkCurrentOldLine, newStart: hunkCurrentNewLine, originalLines: [], proposedLines: [] };
 			}
 			if (currentHunk.displayOldLineCount === 0) {
 				currentHunk.displayOldStart = currentHunk.oldStart + currentHunk.originalLines.length;
 			}
 			currentHunk.originalLines.push(line.slice(1));
+			currentBlock!.originalLines.push(line.slice(1));
 			currentHunk.displayOldLineCount += 1;
+			hunkCurrentOldLine += 1;
 			continue;
 		}
 
@@ -99,19 +135,26 @@ export function parseGitDiff(diffText: string): ParsedDiffFile[] {
 			if (!hunkInChangeBlock) {
 				hunkInChangeBlock = true;
 				currentHunk.displayNewBlockStarts.push(hunkCurrentNewLine);
+				currentBlock = { oldStart: hunkCurrentOldLine, newStart: hunkCurrentNewLine, originalLines: [], proposedLines: [] };
 			}
 			if (currentHunk.displayNewLineCount === 0) {
 				currentHunk.displayNewStart = currentHunk.newStart + currentHunk.proposedLines.length;
 			}
 			currentHunk.proposedLines.push(line.slice(1));
+			currentBlock!.proposedLines.push(line.slice(1));
 			currentHunk.displayNewLineCount += 1;
 			hunkCurrentNewLine += 1;
 			continue;
 		}
 
 		if (line.startsWith(' ')) {
+			if (hunkInChangeBlock && currentBlock) {
+				finalizeBlock(currentBlock, currentHunk);
+				currentBlock = undefined;
+			}
 			hunkInChangeBlock = false;
 			hunkCurrentNewLine += 1;
+			hunkCurrentOldLine += 1;
 			const value = line.slice(1);
 			currentHunk.originalLines.push(value);
 			currentHunk.proposedLines.push(value);
@@ -124,6 +167,7 @@ export function parseGitDiff(diffText: string): ParsedDiffFile[] {
 	}
 
 	if (currentHunk && currentFile) {
+		if (currentBlock) { finalizeBlock(currentBlock, currentHunk); }
 		currentFile.hunks.push(currentHunk);
 	}
 

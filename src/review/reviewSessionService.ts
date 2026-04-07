@@ -33,8 +33,13 @@ export class ReviewSessionService implements vscode.Disposable {
 			return false;
 		}
 
-		await this.startReviewSession(persisted.input, persisted);
-		return true;
+		try {
+			await this.startReviewSession(persisted.input, persisted);
+			return true;
+		} catch {
+			await this.context.workspaceState.update(STORAGE_KEY, undefined);
+			return false;
+		}
 	}
 
 	public async startReviewSession(input: GitDiffReviewSessionInput, persisted?: PersistedReviewSession): Promise<void> {
@@ -94,9 +99,8 @@ export class ReviewSessionService implements vscode.Disposable {
 
 		for (const hunk of [...acceptedHunks].sort((a, b) => b.oldStart - a.oldStart)) {
 			const startIndex = Math.max(0, hunk.oldStart - 1);
-			const originalLines = hunk.originalText.split('\n');
-			const proposedLines = hunk.proposedText.split('\n');
-			workingLines.splice(startIndex, originalLines.length, ...proposedLines);
+			const proposedLines = hunk.proposedText.length > 0 ? hunk.proposedText.split('\n') : [];
+			workingLines.splice(startIndex, hunk.oldLineCount, ...proposedLines);
 		}
 
 		return joinLines(workingLines, trailingNewline);
@@ -152,8 +156,8 @@ export class ReviewSessionService implements vscode.Disposable {
 		}
 
 		const document = await vscode.workspace.openTextDocument(file.uri);
-		const range = this.computeRejectRange(document, hunk);
-		if (!range) {
+		const proposedRange = this.findProposedRange(document, hunk);
+		if (!proposedRange) {
 			hunk.state = 'conflicted';
 			await this.saveSession();
 			this.onDidChangeSessionEmitter.fire();
@@ -161,7 +165,23 @@ export class ReviewSessionService implements vscode.Disposable {
 		}
 
 		const edit = new vscode.WorkspaceEdit();
-		edit.replace(file.uri, range, hunk.originalText);
+		if (hunk.kind === 'insert') {
+			// Reject an insert: remove the added lines entirely (including line separator)
+			const lastLine = proposedRange.end.line;
+			const deleteRange = lastLine < document.lineCount - 1
+				? new vscode.Range(proposedRange.start, new vscode.Position(lastLine + 1, 0))
+				: proposedRange.start.line > 0
+					? new vscode.Range(document.lineAt(proposedRange.start.line - 1).range.end, proposedRange.end)
+					: proposedRange;
+			edit.replace(file.uri, deleteRange, '');
+		} else if (hunk.kind === 'delete') {
+			// Reject a delete: restore the original lines at the anchor position
+			edit.insert(file.uri, proposedRange.start, hunk.originalText + '\n');
+		} else {
+			// Reject a replace: swap proposed lines back to original
+			edit.replace(file.uri, proposedRange, hunk.originalText);
+		}
+
 		const applied = await vscode.workspace.applyEdit(edit);
 		if (!applied) {
 			throw new Error('VS Code rejected the workspace edit for this hunk.');
@@ -236,7 +256,8 @@ export class ReviewSessionService implements vscode.Disposable {
 			throw new Error(`Missing identity metadata for ${parsedFile.path}`);
 		}
 
-		if (identity.hunkIds.length !== parsedFile.hunks.length) {
+		const totalBlocks = parsedFile.hunks.reduce((sum, h) => sum + h.blocks.length, 0);
+		if (identity.hunkIds.length !== totalBlocks) {
 			throw new Error(`Identity hunk count mismatch for ${parsedFile.path}`);
 		}
 
@@ -248,37 +269,47 @@ export class ReviewSessionService implements vscode.Disposable {
 			path: uri.path,
 			query: identity.fileId
 		});
-		const hunks = parsedFile.hunks.map((parsedHunk, index) => {
-			const hunkId = identity.hunkIds[index];
-			if (!hunkId) {
-				throw new Error(`Missing hunk identity for ${parsedFile.path} at index ${index}`);
-			}
-			const kind = this.getHunkKind(parsedHunk.originalLines, parsedHunk.proposedLines);
-			const anchorLine = this.getAnchorLine(parsedHunk, document.lineCount);
-			const contextLine = Math.max(1, Math.min(document.lineCount === 0 ? 1 : document.lineCount, parsedHunk.newStart || parsedHunk.oldStart || 1));
-			const hunk: ReviewHunk = {
-				id: hunkId,
-				fileId: identity.fileId,
-				filePath: parsedFile.path,
-				header: parsedHunk.header,
-				kind,
-				state: 'pending',
-				oldStart: parsedHunk.oldStart,
-				oldLineCount: parsedHunk.oldLineCount,
-				newStart: parsedHunk.newStart,
-				newLineCount: parsedHunk.newLineCount,
-				displayOldStart: parsedHunk.displayOldStart,
-				displayOldLineCount: parsedHunk.displayOldLineCount,
-				displayNewStart: parsedHunk.displayNewStart,
-				displayNewLineCount: parsedHunk.displayNewLineCount,
-				displayNewBlockStarts: parsedHunk.displayNewBlockStarts,
-				originalText: parsedHunk.originalLines.join('\n'),
-				proposedText: parsedHunk.proposedLines.join('\n'),
-				anchorLine,
-				contextLine
-			};
-			return this.validateHunkAgainstDocument(hunk, document);
-		});
+		let blockIdIndex = 0;
+		const hunks = parsedFile.hunks.flatMap(parsedHunk =>
+			parsedHunk.blocks.map(block => {
+				const hunkId = identity.hunkIds[blockIdIndex++];
+				if (!hunkId) {
+					throw new Error(`Missing hunk identity for ${parsedFile.path} at block index ${blockIdIndex - 1}`);
+				}
+				const kind = this.getHunkKind(block.originalLines, block.proposedLines);
+				const blockForAnchor = {
+					newStart: block.newStart,
+					newLineCount: block.newLineCount,
+					displayNewStart: block.newStart,
+					displayNewLineCount: block.newLineCount,
+					oldStart: block.oldStart
+				};
+				const anchorLine = this.getAnchorLine(blockForAnchor, document.lineCount);
+				const contextLine = Math.max(1, Math.min(document.lineCount === 0 ? 1 : document.lineCount, block.newStart || block.oldStart || 1));
+				const hunk: ReviewHunk = {
+					id: hunkId,
+					fileId: identity.fileId,
+					filePath: parsedFile.path,
+					header: parsedHunk.header,
+					kind,
+					state: 'pending',
+					oldStart: block.oldStart,
+					oldLineCount: block.oldLineCount,
+					newStart: block.newStart,
+					newLineCount: block.newLineCount,
+					displayOldStart: block.oldStart,
+					displayOldLineCount: block.oldLineCount,
+					displayNewStart: block.newStart,
+					displayNewLineCount: block.newLineCount,
+					displayNewBlockStarts: block.newLineCount > 0 ? [block.newStart] : [],
+					originalText: block.originalLines.join('\n'),
+					proposedText: block.proposedLines.join('\n'),
+					anchorLine,
+					contextLine
+				};
+				return this.validateHunkAgainstDocument(hunk, document);
+			})
+		);
 
 		return {
 			id: identity.fileId,
@@ -422,10 +453,6 @@ export class ReviewSessionService implements vscode.Disposable {
 		}
 
 		return bestRange;
-	}
-
-	private computeRejectRange(document: vscode.TextDocument, hunk: ReviewHunk): vscode.Range | undefined {
-		return this.findProposedRange(document, hunk);
 	}
 
 	private async ensureHunkApplicable(hunk: ReviewHunk, requireProposedMatch: boolean): Promise<void> {
